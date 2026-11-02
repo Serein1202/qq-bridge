@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: c24c66f571a941975f0cfa91c4043623_6240d60ed69711f1a286525400638852
-    ReservedCode1: 0KVrNIo287Y4sVXTIzjrx9DitkmoUQz9X7H76IBzsF1pmsiSwobxM4y0FIbXCAP26HYHmNLKYYriiVywe7Ca6iACNuxa2SnKDJh3GKglVPN475RGqRYUzvVNDCPx8vj4htCic+Vm2W69MfLVCc64+U2ChUwwPyPDE9q7LyO/baMz/bnGMhPb+DY5sho=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: c24c66f571a941975f0cfa91c4043623_6240d60ed69711f1a286525400638852
-    ReservedCode2: 0KVrNIo287Y4sVXTIzjrx9DitkmoUQz9X7H76IBzsF1pmsiSwobxM4y0FIbXCAP26HYHmNLKYYriiVywe7Ca6iACNuxa2SnKDJh3GKglVPN475RGqRYUzvVNDCPx8vj4htCic+Vm2W69MfLVCc64+U2ChUwwPyPDE9q7LyO/baMz/bnGMhPb+DY5sho=
----
-
 # QQ ↔ DeepSeek Harness 桥接
 
 **English**: [README.en.md](README.en.md) | **中文**: [README.md](README.md)
@@ -396,4 +385,4 @@ SnowLuma 同一个账号的 **HTTP token（默认 3000 端口）与 WebSocket to
 ## 合规提醒
 
 SnowLuma 是独立第三方项目，与腾讯/QQ 无隶属关系，仅供学习与技术研究；使用前请阅读其 EULA 与《QQ 用户协议》。
-*（内容由AI生成，仅供参考）*
+
