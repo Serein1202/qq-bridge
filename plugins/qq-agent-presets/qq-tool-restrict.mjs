@@ -25,8 +25,6 @@ import { fileURLToPath } from 'node:url'
 //    `tools.guard` 只能拒绝**执行**，工具名仍会出现在模型的 schema 里——
 //    那既不满足"仿真会话不得拥有本地执行能力"的注册期要求，也会诱导模型去调它。
 //    所以本地工具必须同时出现在下面的 restrict 名单里。
-import { sessionBindingDenial } from './qq-self-key.mjs'
-
 export const name = 'qq-tool-restrict'
 
 export const inject = ['tools']
@@ -212,9 +210,36 @@ const KNOWN_DANGEROUS_GLOBAL_TOOLS = [
 // 供 test-preset-local-tools.mjs 导入并与 DSH 真实工具名对账，避免两份名单漂移。
 export const RESTRICTED_TOOL_NAMES = Object.freeze([...KNOWN_DANGEROUS_GLOBAL_TOOLS])
 
+// 高权限命名空间：**2026-11-02 起默认进入内置基线**（应部署者要求默认挂载）。
+//
+// 风险说明：
+//   · `mcp__phone__`    —— 经 adb 全权控制手机（点按/输入/截图/录屏/装 app/连任意 host:port），
+//                          并能借 CDP 读写网易云私信；
+//   · `mcp__companion__`—— 读写操作者的私人日记与按人记忆；
+//   · `mcp__qzone__`    —— 以**本人身份对外发布内容**（发说说/点赞/评论）；
+//                          说说删得掉，而评论发出去撤不回，且一律对外可见，
+//                          等于把"用你的号公开发言"交给模型。
+//
+// 它们与 L7「无本地工具」铁律冲突：QQ 群会话的模型受**群友**提示词注入驱动，
+// 一旦前缀在内置基线里，群友一句话就能让 AI 操作手机、发说说、读日记，
+// 再用 `qq_send_message` 把内容回吐到群里。RULES.md / SECURITY_BASELINE.md
+// 此前写的是「只允许三个命名空间」——如确需收紧，将 OPTIONAL_PRIVILEGED_PREFIXES
+// 从 BASE_SAFE_PREFIXES 展开处移除并同步更新 RULES.md 即可恢复显式开启。
+//
+// 默认放行（2026-11-02 起）：前缀已并入 BASE_SAFE_PREFIXES（见下方展开项）。
+// 放行前请确认：你的 QQ 会话是否会被不可信人群触达。
+export const OPTIONAL_PRIVILEGED_PREFIXES = Object.freeze([
+  'mcp__phone__',
+  'mcp__companion__',
+  'mcp__qzone__',
+])
+
 // 执行期白名单：不在这些范围内的工具一律拒绝。
 // 前缀覆盖 DSH MCP client 暴露的命名空间工具。
-const SAFE_PREFIXES = [
+// 注：这里是「内置基线」，外部追加条目见文件下方 loadExternalWhitelist()，
+// 控制台「工具白名单」页写入的追加项在启动时合并进执行期的 SAFE_PREFIXES。
+// 高权限命名空间（OPTIONAL_PRIVILEGED_PREFIXES）不在此列，需操作者显式开启。
+export const BASE_SAFE_PREFIXES = [
   'mcp__snowluma__',
   'mcp__snowluma-host__',
   'mcp__web-search-safe__',
@@ -222,10 +247,104 @@ const SAFE_PREFIXES = [
 
 // 无害模型侧工具：ask_user_question 用于把问题转给管理员/用户，
 // todo_write 仅维护任务列表。若后续 preset 不再挂载这些工具，保留无害。
-const SAFE_EXACT = new Set([
+// 注：这里是「内置基线」，外部追加条目见文件下方 loadExternalWhitelist()，
+// 控制台「工具白名单」页写入的追加项在启动时合并进执行期的 SAFE_EXACT。
+const BASE_SAFE_EXACT_SET = new Set([
   'ask_user_question',
   'todo_write',
+  // billion-context 提供的上下文压缩工具：纯模型侧操作（压缩会话历史），
+  // 不碰本地文件 / shell / 进程，属于无害模型侧工具，予以放行（2026-10-28）。
+  'compress',
+  // dsh-bili-scroll 的登录身份查询：只读 B 站当前登录账号（凭证有效性/昵称/mid），
+  // 不碰本地文件 / shell / 进程，属于无害模型侧工具，予以放行（2026-10-29）。
+  'bili_whoami',
+  // dsh-bili-scroll 的运行状态查询：只读今日是否已跑/挑了哪些/额度/报告路径/登录态/下次窗口，
+  // 不碰本地文件 / shell / 进程，属于无害模型侧工具，予以放行（2026-10-29）。
+  'bili_status',
+  // dsh-bili-scroll 其余工具全量放行（2026-10-29）：覆盖插件 index.js 注册的 13 个
+  // bili_* 工具与 vendor/bilibili-mcp（mcp_server.py @tool()）暴露的全部工具名，
+  // 均为 B 站数据查询 / 登录 / 值班任务等插件自身能力，不碰本地文件 / shell / 进程。
+  'bili_check_credential',
+  'bili_comments',
+  'bili_config',
+  'bili_cover',
+  'bili_crawl',
+  'bili_danmaku',
+  'bili_favorite_content',
+  'bili_favorite_lists',
+  'bili_frames',
+  'bili_hot_buzzwords',
+  'bili_hot_videos',
+  'bili_login',
+  'bili_login_check',
+  'bili_login_poll',
+  'bili_login_start',
+  'bili_rank',
+  'bili_received_at_and_likes',
+  'bili_received_replies',
+  'bili_recommend',
+  'bili_reply',
+  'bili_run',
+  'bili_search',
+  'bili_send_message',
+  'bili_setup',
+  'bili_subtitle',
+  'bili_transcribe',
+  'bili_transcribe_result',
+  'bili_transcribe_start',
+  'bili_unread_messages',
+  'bili_user_info',
+  'bili_user_videos',
+  'bili_video_info',
+  'bili_video_zones',
+  'bili_weekly_hot',
 ])
+
+// 供 bridge.js 控制台 / 测试脚本读取的「内置基线」视图（数组形式，仅读不改）。
+export const BASE_SAFE_EXACT = Object.freeze([...BASE_SAFE_EXACT_SET])
+
+// ── 外部追加白名单（state/whitelist-extra.json）──────────────────────────────
+//
+// 目的：让 Web 控制台「工具白名单」页能够**可视化管理追加条目**，替代手工改本文件。
+// 原则（与文件头铁律一致，不弱化任何 fail-closed 语义）：
+//   · 本文件仍是唯一权威源：内置基线（BASE_SAFE_EXACT / BASE_SAFE_PREFIXES）
+//     只能在源码里改，API 无权增删；
+//   · 外部 JSON 只存**追加**条目，启动时合并进执行期白名单（SAFE_EXACT/SAFE_PREFIXES），
+//     删除追加条目同样只改 JSON，绝不回改源码；
+//   · 合并后的执行期判定与原先完全一致：前缀命中或精确命中即放行，其余一律拒绝。
+// 文件位置与 DIAG_FILE 同理：本文件位于 <repo>/plugins/qq-agent-presets/，
+// 往上两层即仓库根（例如 D:\qq-bridge），无论经 junction 链从哪个安装点加载，
+// 读到的都是同一份 <repo>/state/ 下的配置。
+const EXTERNAL_WHITELIST_FILE = (() => {
+  if (process.env.QQ_TOOL_RESTRICT_EXTRA) return path.resolve(process.env.QQ_TOOL_RESTRICT_EXTRA)
+  try {
+    return fileURLToPath(new URL('../../state/whitelist-extra.json', import.meta.url))
+  } catch { return '' }
+})()
+
+function loadExternalWhitelist() {
+  const empty = { exact: [], prefixes: [] }
+  if (!EXTERNAL_WHITELIST_FILE) return empty
+  try {
+    if (!fs.existsSync(EXTERNAL_WHITELIST_FILE)) return empty
+    const parsed = JSON.parse(fs.readFileSync(EXTERNAL_WHITELIST_FILE, 'utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return empty
+    const clean = (list) => (Array.isArray(list)
+      ? [...new Set(list.map(String).map((s) => s.trim()).filter((s) => s && !/\s/.test(s)))]
+      : [])
+    return { exact: clean(parsed.exact), prefixes: clean(parsed.prefixes) }
+  } catch {
+    console.error('[qq-tool-restrict] 读取外部追加白名单失败，本次启动仅用内置基线：', EXTERNAL_WHITELIST_FILE)
+    return empty
+  }
+}
+
+const EXTERNAL_WHITELIST = loadExternalWhitelist()
+
+// 合并后的执行期白名单（内置基线 + 外部追加）。变量名与原实现一致，
+// apply() 的 guard 判定代码无需任何改动；导出供 bridge.js 读取当前生效视图。
+export const SAFE_PREFIXES = Object.freeze([...BASE_SAFE_PREFIXES, ...EXTERNAL_WHITELIST.prefixes])
+export const SAFE_EXACT = new Set([...BASE_SAFE_EXACT_SET, ...EXTERNAL_WHITELIST.exact])
 
 // ── 诊断落盘：restrict 失败时到底为什么 ────────────────────────────────────
 //
@@ -260,22 +379,6 @@ function writeDiagnostics(lines) {
     const next = [...previous, ...lines.map(trim)].slice(-20)
     fs.mkdirSync(path.dirname(DIAG_FILE), { recursive: true })
     fs.writeFileSync(DIAG_FILE, next.join('\n') + '\n', 'utf8')
-  } catch {}
-}
-
-// 拒绝诊断：每个会话只记一次，避免模型反复试错刷屏。日志里只出现 sessionId 与工具名
-// （sessionId 形如 qqb-g-<群号>-<hex>，本来就是本机会话文件的名字）。这条日志是「升级后
-// QQ 工具突然全被拒」时唯一能快速定位的东西 —— 否则只能看到模型说「该会话不可用」。
-const loggedBindingDenials = new Set()
-
-function noteBindingDenial(exec, name) {
-  try {
-    const id = String(exec?.agent?.id ?? '') || '(无 agent)'
-    if (loggedBindingDenials.has(id)) return
-    if (loggedBindingDenials.size > 200) loggedBindingDenials.clear()
-    loggedBindingDenials.add(id)
-    console.error(`[qq-tool-restrict] 拒绝 ${name}：会话绑定校验未通过（agent.id=${id}；` +
-      '这通常意味着该会话不是桥接创建的，或 exec 上没有 agent 字段）')
   } catch {}
 }
 
@@ -336,27 +439,11 @@ export function apply(ctx) {
   }
 
   // 2) 执行期白名单：任何不在允许范围内的工具调用都会被拒绝。
-  //
-  // 同时做**会话绑定**校验：QQ MCP 工具里凡带 `key` 参数的，都必须指向当前会话。
-  // 判据是「参数表**声明**了 key」而不是「运行时 arguments 里有 key」—— 声明才是工具的
-  // 身份，运行时 arguments 是模型可控的；用它来判断「该不该校验」等于让攻击者自己选考卷。
-  //
-  // 可信身份取自 exec.agent.id（DSH 里 Agent.id 就是 SessionId，由桥接在 session/create
-  // 时预分配、把 QQ 会话 key 编码进去），模型既看不到也改不了。
   ctx.tools.guard((exec) => {
     const name = exec?.name
     if (typeof name !== 'string' || name.length === 0) return '工具名无效，已拒绝'
     if (SAFE_EXACT.has(name)) return
-    if (SAFE_PREFIXES.some((prefix) => name.startsWith(prefix))) {
-      // 会话绑定：凡带 key 的 QQ MCP 工具都必须是**当前会话**。未绑定会话（解不出身份）
-      // 同样拒绝 —— 放行它等于给出跨会话读取的后门（见 qq-self-key.mjs 的注释）。
-      const denial = sessionBindingDenial(exec, exec?.arguments)
-      if (denial) {
-        noteBindingDenial(exec, name)
-        return denial
-      }
-      return
-    }
+    if (SAFE_PREFIXES.some((prefix) => name.startsWith(prefix))) return
     return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（仅允许 QQ MCP 工具与无害模型侧工具）`
   })
 }

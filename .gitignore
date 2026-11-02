@@ -9,9 +9,6 @@ config.json
 *.bak
 *.bak-*
 
-# SnowLuma MCP 的 catalog.js 投影（再分发其内容，见 NOTICE.md §2.2），不得提交
-_snowluma-catalog.json
-
 # Local development / planning / research docs (not part of public project)
 /PROJECT_GUIDE.md
 /ARCH_REVIEW.md
@@ -69,3 +66,15 @@ docs/guides/VOICE.md
 # 语音库（用户个人音频素材，config.json 的 socialV2.voice.dir 指向此处）
 audio/
 
+# ── companion 运行数据：人物记忆账本 + 她自己写的日记 ────────────────────────
+# people.json 里是**真实 QQ 号 → 昵称/性格/聊过的话题**的映射（实测含真实 10 位 QQ 号），
+# diary/ 是本机跑出来的个人化日记正文。二者都是运行时产物，不是源码。
+# 保留空目录占位（.gitkeep），否则全新克隆会因为 dataDir 不存在而在首次记忆写入时报错。
+# 写成 `data/*` 而不是 `data/`：Git 一旦排除整个目录就不会再进去看，
+# 目录级的否定规则（!…/.gitkeep）会失效，占位文件照样传不上去。
+packages/companion/data/*
+!packages/companion/data/.gitkeep
+
+
+# Local workbuddy memory notes (real QQ IDs / machine paths, never publish)
+.workbuddy/

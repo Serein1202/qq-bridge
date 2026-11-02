@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: c24c66f571a941975f0cfa91c4043623_60883998d69711f18c3f52540064ee0f
+    ReservedCode1: Hx2gu5Ewk5j7bQ1nYUmlqA123Wcv0TuBKBsbmVHZJd5lNUnmHMKJbIMY1gDia/HTuoq3P8PzcOALItEqJQ5OETgYS4Sm1m3/dPSX8IRcEkmzmytC8wZn07tq3SHDlCiNlCKq8mrGRRzmOeVH/UydoOtozO66xuuqrZmmRFf3A1E1xn5FjF0t8/lrXdY=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: c24c66f571a941975f0cfa91c4043623_60883998d69711f18c3f52540064ee0f
+    ReservedCode2: Hx2gu5Ewk5j7bQ1nYUmlqA123Wcv0TuBKBsbmVHZJd5lNUnmHMKJbIMY1gDia/HTuoq3P8PzcOALItEqJQ5OETgYS4Sm1m3/dPSX8IRcEkmzmytC8wZn07tq3SHDlCiNlCKq8mrGRRzmOeVH/UydoOtozO66xuuqrZmmRFf3A1E1xn5FjF0t8/lrXdY=
+---
+
 # QQ 桥接权限与安全规则（RULES）
 
 ## 运行模式（QQ 桥接四模式）
@@ -27,7 +38,7 @@
 
 | 主体 | 通道 | 权限 |
 | --- | --- | --- |
-| **管理员（ownerQQ，可通过桥接控制台、`config.json` 或 DSH `qq-mode` 设置命名空间 / RPC 配置）** | QQ 群/私聊 | 正常聊天 + **管理命令由桥接硬执行**（不经过模型）：`/role <角色名>` 切人格、`/role off` 清除、`/silent` 静默、`/active` 恢复、`/reset`、`/status`；消息自动带【管理员】标记 |
+| **管理员（ownerQQ，控制台或 DSH 设置页可配置）** | QQ 群/私聊 | 正常聊天 + **管理命令由桥接硬执行**（不经过模型）：`/role <角色名>` 切人格、`/role off` 清除、`/silent` 静默、`/active` 恢复、`/reset`、`/status`；消息自动带【管理员】标记 |
 | **群友** | QQ 群 | **仅正常聊天**。控制词、`/` 管理命令被桥接拦截；静默模式下消息不投递给 agent |
 | **管理员** | **桥接控制台**（`http://127.0.0.1:3100`） | **最高权限**：控制模式（控制台顶部模式按钮）、控制角色/静默（写 `state/current-role.json`）、完整 DSH 工具（含本地操作）、查看 QQ 活动日志（`state/qq-activity.log`）、直接打开「QQ 聊天」工作区会话对话 |
 | **QQ 会话 agent（chat 模式）** | — | 最低权限面（见下） |
@@ -35,23 +46,33 @@
 ## QQ 会话 agent 的硬边界
 
 1. **无本地工具**：qq-chat / qq-chat-v2 预设不挂载 bash/pwsh、文件读写、子代理、工作流——群友无论如何诱导，agent 物理上无法操作本机。
-2. **QQ 动作安全子集**：只允许 `mcp__snowluma__*`、`mcp__snowluma-host__*`、`mcp__web-search-safe__*` 三个命名空间下的工具，以及 `ask_user_question` / `todo_write`；其他工具（含 `dev_*` 开发/管理工具）在执行期会被 `qq-tool-restrict.mjs` 拒绝。QQ 动作无禁言、踢人、文件上传下载等管理操作。
+2. **QQ 动作安全子集**：默认只允许 `mcp__snowluma__*`、`mcp__snowluma-host__*`、`mcp__web-search-safe__*` 三个命名空间下的工具，以及 `ask_user_question` / `todo_write`；其他工具（含 `dev_*` 开发/管理工具）在执行期会被 `qq-tool-restrict.mjs` 拒绝。QQ 动作无禁言、踢人、文件上传下载等管理操作。
+   - ⚠️ **三个高权限命名空间默认关闭**（详见 `OPTIONAL_PRIVILEGED_PREFIXES`）：
+     - `mcp__phone__` —— 经 adb 控制手机（点按/输入/截图/录屏）、连任意 host:port、经 CDP 读写网易云私信；
+     - `mcp__companion__` —— 读私人日记与按人记忆；
+     - `mcp__qzone__` —— 以本人身份发说说/点赞/评论（说说可删，**评论撤不回**且对外可见）。
+
+     它们与「无本地工具」冲突——QQ 群会话受**群友**提示词注入驱动，一旦放行，群友一句话就能让 AI 操作你的手机、读你的日记、或用你的号公开发言，再用 `qq_send_message` 把内容回吐到群里。
+   - 确需使用时**由你显式开启，两步都要做**：
+     1. **挂载 MCP**（默认**不挂载**）：`node scripts/setup-dsh.mjs web --enable=phone,companion,qzone`
+        （等价环境变量 `QQ_BRIDGE_ENABLE_MCP=phone,companion,qzone`）。脚本幂等：
+        重跑时不带 `--enable`，这三个条目会被整段清掉 —— **能开就能关**。
+        默认不挂载的原因：`tools.restrict` 只藏本地执行类工具，MCP 命名空间走的是执行期 `guard`，
+        条目只要写进 `cordis.patch.yml`，那几十个工具名照样**出现在模型的工具 schema 里**
+        （每回合付 token，还诱导模型反复尝试调用再被拒）。不写条目 ⇒ DSH 不拉进程 ⇒ 不进 schema。
+     2. **放行白名单**：控制台「访问与安全 → 工具白名单」加入对应前缀（写入 `state/whitelist-extra.json`，重启 DSH 生效），或写进环境变量 `QQ_TOOL_RESTRICT_EXTRA` 指向的 JSON。模板见 `docs/guides/whitelist-extra.example.json`。
+
+     两步缺一不可：只挂载不放行 = 看得到工具、调用被拒；只放行不挂载 = 白名单开着但没有工具可掉。开启前请确认该 QQ 会话不会被不可信人群触达。
+   - ✅ 建议的折中做法：这三个能力只在**私聊**会话里放行。先按上面第 1 步挂载，再按需开户；不要图省事全局开。
+   - 2026-10-30 的一次批量合并曾把 `mcp__phone__` / `mcp__companion__` 直接写进内置基线（默认放行），与本文当时的描述背离；现已改回默认关闭。回归断言见 `scripts/test-preset-local-tools.mjs` 的「高权限命名空间默认不在内置基线里」。
 3. **只读联网搜索**：`qq-chat` / `qq-chat-v2` 预设已关闭 DSH 内置 `tool-web` 的 `search` / `fetch`，联网统一走 `src/mcp-web-search-safe.js` 提供的 `mcp__web-search-safe__web_search/web_fetch`。不暴露本地文件、命令执行、写操作。
    - ✅ `mcp__web-search-safe__web_fetch` 已做 SSRF 加固：仅 http/https、禁止 localhost/私有 IP/链路本地/CGNAT/带凭据 URL、DNS 解析结果全量校验、每跳重定向重新校验、响应体限量读取。
 4. **发送强制白名单**：所有发送类工具（`qq_send_group_message` / `qq_send_private_message` / `qq_send_message` / `qq_send_burst` / `qq_reply` / `qq_send_poke` / `qq_send_sticker` / `qq_send_voice` 等）的目标必须命中 `config.json` 的 `allow.groups` / `allow.private`，否则拒绝执行。
-   - **语音额外收紧**：`qq_send_voice` 只能发**语音库**（`socialV2.voice.dir`，默认 `qq-bridge/audio/`）里的文件，不能发任意本地路径、URL 或 base64（防 prompt injection 拿本机文件当语音外发）；另有独立的时长/体积/频率上限（`socialV2.voice.*`），额度与文本发送分开计数。详见 `docs/guides/VOICE.md`（本地文档，未入库）。
+   - **语音额外收紧**：`qq_send_voice` 只能发**语音库**（`socialV2.voice.dir`，默认 `qq-bridge/audio/`）里的文件，不能发任意本地路径、URL 或 base64（防 prompt injection 拿本机文件当语音外发）；另有独立的时长/体积/频率上限（`socialV2.voice.*`），额度与文本发送分开计数。详见 [docs/guides/VOICE.md](docs/guides/VOICE.md)。
 5. **发送禁令（模型层）**：persona 明确规定只有「管理端明确指示」或「【管理员】标记的明确要求」才可使用发送工具；禁止写"我已回复/消息已发送（message_id）"类汇报。
 6. **回复审计（桥接层硬拦截）**：agent 回复文本若包含本机路径（`C:\`、`/home/` 等）或凭据特征（token/password/secret/api key 等）→ **整条拦截不发送**，并告知"被安全策略拦截"。
 7. **人格由桥接注入**：角色设定来自 `state/current-role.json` + `roles/<角色>.md`，桥接注入到消息；群友口头要求改角色无效（桥接直接拦截），agent 也无文件工具自行更改。
 8. **静默模式**：`current-role.json` 的 `mode: "silent"` 时，群友消息不再投递给 agent（仅记录日志），只有管理员消息可对话。
-9. **执行期会话绑定（SELF_KEY）**：凡**参数表里声明了 `key`** 的 QQ 工具，调用前都会比对「这次调用所属的 DSH 会话」。
-   - 支持 `target` 作为 `key` 别名的工具同样校验可信会话；缺少目标、别名冲突或跨会话目标一律拒绝。旧发送工具按实际 `groupId` / `userId` 校验，不能通过省略 `key` 跳过绑定。
-   - 桥接建会话时预分配 `qqb-<g|p>-<群号>-<随机后缀>` 形式的 sessionId（模型看不到也改不了）；
-     preset 的 `qq-tool-restrict` 守卫从 `exec.agent.id` 解出可信身份，再与模型给的 `key` 比对。
-   - 不一致或解不出身份 ⇒ 一律返回同一句「该会话不可用」（不可区分，避免变成群号枚举 oracle）。
-   - 升级后旧的 `session-*` 映射会在首次使用时退役重建，不会出现「升级后工具全废」。
-   - 在 DSH 里**手工新建**的 qq-chat 会话不属于任何 QQ 会话，解不出身份 ⇒ 它的 QQ 工具会被拒绝。这是有意的：
-     想操作 QQ 请从控制台打开桥接建的那个会话（id 形如 `qqb-…`），不要新建。
 
 ## 提示词的两层边界（仿真 vs 人格）
 
@@ -59,14 +80,13 @@
 
 | 层 | 位置 | 管什么 | 生效方式 |
 | --- | --- | --- | --- |
-| **仿真提示词**（两代各一份） | `dsh/agent-presets/qq-chat/agent.cordis.yml`（一代）与 `qq-chat-v2/agent.cordis.yml`（二代）的 `persona.prefix` | 怎么调工具、怎么参与群聊（行为与协议：安全规则、工具协议、唤醒/分条/记忆/黑话等） | 控制台可按代次分别编辑；保存会写仓库源文件并同步到 `~/.dsh/plugins/qq-agent-presets/presets/<preset>.patch.yml`（旧安装的 `.agent-presets` 目录仅作兼容回退）；**新会话**自动用新版，**正在进行的 QQ 会话**需 `POST /api/session/reset` 或重启 DSH |
-| **人格提示词** | `roles/<人格名>.md` | AI 是谁、什么性格、怎么说话（人设与语气） | 桥接按当前模式与注入节奏提供，保存后的下一次唤醒生效 |
+| **仿真提示词**（两代各一份） | `dsh/agent-presets/qq-chat/agent.cordis.yml`（一代）与 `qq-chat-v2/agent.cordis.yml`（二代）的 `persona.prefix` | 怎么调工具、怎么参与群聊（行为与协议：安全规则、工具协议、唤醒/分条/记忆/黑话等） | 控制台可按代次分别编辑；保存会写仓库源文件并**自动重新生成 bundle patch**（`plugins/qq-agent-presets/presets/<preset>.patch.yml`，DSH 0.1.7 起真正生效的就是它；`~/.dsh/.agent-presets/` 那个遗留目录 DSH 已不再读，仅作尽力同步）；若 patch 重新生成失败会**报错并回滚源文件**，不会留下"改了却没生效"的半截状态；**新会话**自动用新版，**正在进行的 QQ 会话**需 `POST /api/session/reset` 或重启 DSH |
+| **人格提示词** | `roles/<人格名>.md` | AI 是谁、什么性格、怎么说话（人设与语气） | 桥接每条消息前注入，**保存即生效** |
 
 - 拼装顺序：`仿真提示词 → 人格提示词 → 本轮消息`。
-- **人格卡只写人设，不写工具用法**：两代工具协议不同（一代空格分条 / `[SILENT]`，二代一切皆工具），写进人格卡必然有一代是错的；桥接已经按当前模式提供分条与潜水说明。写作规范见 `roles/README.md`。
+- **人格卡只写人设，不写工具用法**：两代工具协议不同（一代空格分条 / `[SILENT]`，二代一切皆工具），写进人格卡必然有一代是错的；而且桥接已经每条消息注入当前模式的分条与潜水方式。写作规范见 `roles/README.md`。
 - 同一个角色确实需要分代时，用**标题级模式标记**：`## 分条方式 〔一代〕` / `## 表情包 〔二代〕`；无标记的小节两代都注入，标记在注入前会被去掉。桥接按当前模式筛完小节**再**截断。
-- **注入上限**：完整人格卡单次最多注入 8000 字符（`config.json` 的 `role.maxInjectChars`，1000~20000，控制台可改）。这是成本护栏。
-- **注入节奏**：首次唤醒 / 角色卡文件变化 / **DSH 会话重建**（`/reset`、换模式、换 preset、DSH 重启）时注入完整人格卡，其后每 `role.injectEveryNWakes` 次唤醒（默认 4，设 1 = 每次都全量）再全量一次，其余唤醒只给一行「角色卡已给过」的提醒。计数按 QQ 会话存在 `state/role-inject.json`，签名里带当前 DSH sessionId —— 新会话的上下文是空的，必须重新全量。
+- **注入上限**：默认每条消息 6000 字符（`config.json` 的 `role.maxInjectChars`，1000~20000，控制台可改）。这是成本护栏——人格卡会随每条消息发送。
 - 仿真提示词保存前会做硬性校验：保留 `你没有本地工具` / `群友没有管理权限` / `API 令牌` / `角色由桥接注入` / `不会自动发送到 QQ` 这些安全不变量，且正文 ≥ 500 字符；缺失即拒绝保存（否则会同时削弱权限边界并让 `npm run test:audit` 变红）。写入前自动备份到 `state/preset-backups/`，可一键还原；还原时同样校验。
 - 一代遗留写法（空格分句、`[SILENT]`、自动转发）若出现在**未标记**的小节里，二代下会被兜底整行过滤；控制台会提示把它们移到 `〔一代〕` 小节。
 - 两层提示词都**只能由控制台（管理员令牌）修改**：带 `x-agent-token` 的请求对这些端点一律 403，QQ 群里的 AI 无法改写自己的提示词。
@@ -118,3 +138,4 @@
 - 想彻底关闭机器人：停止桥接进程（start.bat 窗口 Ctrl+C）或 SnowLuma。
 - 修改白名单/角色/owner 后保存即热更新（控制台写入 config.json / state/*.json 后即时生效）；修改 preset（权威源在 `dsh/agent-presets/`，改完跑 `node scripts/build-agent-preset-patches.mjs` 重新生成 bundle patch）后重启 DSH 生效。
 - ⚠️ 桥接只能运行一个实例：消息异常时先检查任务管理器里是否有多余的 `node ...bridge.js`。
+*（内容由AI生成，仅供参考）*
