@@ -357,6 +357,30 @@ button.planned {
   border-radius:9px;
   color:var(--icon)
 }
+.topbar-restart {
+  font-size:12px;
+  height:34px;
+  padding:0 12px;
+  border:1px solid var(--accent-border);
+  border-radius:9px;
+  background:var(--accent-soft-bg);
+  color:var(--accent-soft-fg);
+  cursor:pointer;
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  font-weight:600;
+  white-space:nowrap;
+  transition:background .2s, color .2s
+}
+.topbar-restart:hover {
+  background:var(--accent-soft-bg-active);
+  color:var(--accent)
+}
+.topbar-restart:disabled {
+  opacity:.6;
+  cursor:wait
+}
 main {
   padding:38px 40px 20px;
   max-width:1514px;
@@ -1755,6 +1779,14 @@ button:active:not(:disabled) {
 #section-usage .usage-legend i.off { background:var(--accent) }
 #section-usage .usage-legend i.mixed { background:var(--accent-hover) }
 
+/* 工具白名单页 */
+.tool-wl-list { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; max-height:420px; overflow:auto; padding:2px; }
+.tool-wl-chip { display:inline-flex; align-items:center; gap:8px; padding:5px 10px; border:1px solid var(--border); border-radius:999px; background:var(--surface); font-size:13px; }
+.tool-wl-chip code { color:var(--accent); }
+.tool-wl-badge { font-size:11px; color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:0 7px; }
+.tool-wl-chip button { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--danger); color:var(--danger); background:transparent; cursor:pointer; }
+.tool-wl-chip button:hover { background:var(--danger); color:#fff; }
+
 </style>
 </head>
 <body>
@@ -1775,6 +1807,7 @@ button:active:not(:disabled) {
       <button data-view="usage" class="nav-item"><span class="nav-icon" aria-hidden="true">◧</span>令牌与花费</button>
       <button data-view="access" class="nav-item"><span class="nav-icon" aria-hidden="true">⊙</span>访问与安全</button>
       <button data-view="operations" class="nav-item"><span class="nav-icon" aria-hidden="true">⌘</span>调试与运维</button>
+      <button data-view="plugins" class="nav-item"><span class="nav-icon" aria-hidden="true">⚙</span>工具白名单<span class="nav-note">DSH</span></button>
       <button data-view="reference" class="nav-item"><span class="nav-icon" aria-hidden="true">ⓘ</span>工具参考</button>
     </nav>
     <div class="sidebar-bottom"><span class="local-dot"></span>本地控制台<small>QQ ↔ DeepSeek Harness</small></div>
@@ -1782,7 +1815,7 @@ button:active:not(:disabled) {
   <div class="workspace">
     <header class="topbar">
       <div class="breadcrumb">工作空间<span>/</span><span id="breadcrumbPage">运行总览</span></div>
-      <div class="topbar-actions"><span class="status-badge" id="statusText" role="status">正在连接…</span><button id="themeToggle" class="icon-button" type="button" aria-label="切换深色模式" aria-pressed="false" title="切换深色 / 浅色主题">☾</button><button id="refreshConsole" class="icon-button" aria-label="刷新控制台状态" title="刷新状态">↻</button></div>
+      <div class="topbar-actions"><span class="status-badge" id="statusText" role="status">正在连接…</span><button id="themeToggle" class="icon-button" type="button" aria-label="切换深色模式" aria-pressed="false" title="切换深色 / 浅色主题">☾</button><button id="refreshConsole" class="icon-button" aria-label="刷新控制台状态" title="刷新状态">↻</button><button id="restartDshTopBtn" class="topbar-restart" type="button" title="重启 DSH 网关（3080）">⟳ 重启 DSH 网关</button></div>
     </header>
     <main id="mainContent" tabindex="-1">
       <div class="page-heading"><div><div class="eyebrow">QQ BRIDGE / CONSOLE</div><h1 id="pageTitle">让每一次连接，都自然发生。</h1><p id="pageDescription">掌握桥接状态，轻松管理你的 QQ 智能伙伴。</p></div>
@@ -2434,6 +2467,42 @@ button:active:not(:disabled) {
         <tr><td>qq_slang_submit</td><td>AI 提交陌生词/黑话给管理员筛选</td></tr>
       </table>
       <div class="meta" style="margin-top:10px">二代仿真模式工具：qq_get_prompt / qq_get_unread_messages / qq_get_recent_messages / qq_social_state / qq_send_burst / qq_send_message / qq_wait_for_messages / qq_set_wake_config / qq_mark_read / qq_memory_* / qq_slang_query / qq_slang_submit 等。</div>
+    </section>
+<section id="section-plugins" data-page="plugins" class="card span-all">
+      <h2>工具白名单（qq-tool-restrict）</h2>
+      <div class="meta">管理 DSH 网关（3080）QQ 会话可调用的工具：内置基线条目由源码权威维护、只读；新增与删除只写 <code>state/whitelist-extra.json</code>（外部追加），保存后<b>重启 DSH 网关</b>才会生效。不在白名单内的工具仍会被 fail-closed 拒绝，本页不会弱化该语义。</div>
+      <div class="row" style="margin-top:10px">
+        <input type="text" id="toolWlFilter" placeholder="按关键字过滤（如 bili_、mcp__）" style="flex:1" autocomplete="off">
+        <button id="toolWlClearFilter" class="small">清空</button>
+      </div>
+      <div class="row" style="margin-top:10px;align-items:flex-end">
+        <div style="flex:1">
+          <label>新增工具条目</label>
+          <input type="text" id="toolWlInput" placeholder="tool_name 或前缀 mcp__ns__（精确名与 MCP 命名空间前缀均支持）" autocomplete="off">
+          <div class="meta">校验规则：仅允许字母/数字/下划线；含尾随 <code>__</code> 视为前缀，否则视为精确名；与内置基线重复的条目会被拒绝。</div>
+        </div>
+        <button id="toolWlAdd" class="primary">新增</button>
+      </div>
+      <div class="row" style="margin-top:10px;align-items:flex-end">
+        <div style="flex:1">
+          <label>批量导入工具条目</label>
+          <textarea id="toolWlBulkInput" rows="4" placeholder="每行一个；也支持逗号/空格分隔&#10;tool_name_a&#10;mcp__ns__&#10;tool_name_b, tool_name_c" style="width:100%;box-sizing:border-box" autocomplete="off"></textarea>
+          <div class="meta">自动去重：跳过内置基线、已存在条目与非法格式，其余一次性批量提交（Ctrl+Enter 快速导入）。</div>
+        </div>
+        <button id="toolWlBulkAdd" class="primary">批量导入</button>
+      </div>
+      <div id="toolWlBulkMsg" class="meta" style="margin-top:8px"></div>
+      <div id="toolWlMsg" class="meta" style="margin-top:8px"></div>
+      <div style="margin-top:14px;font-size:13px;color:var(--muted)">内置基线 <span id="toolWlBaseCount">—</span> 条 · 外部追加 <span id="toolWlExtraCount">—</span> 条 · 当前生效共 <span id="toolWlTotalCount">—</span> 条（含前缀类）</div>
+      <div id="toolWlList" class="tool-wl-list"></div>
+      <div class="row" style="margin-top:14px">
+        <button id="toolWlSave" class="primary">保存并重启 DSH 网关</button>
+        <span class="meta" id="toolWlRestartMsg"></span>
+      </div>
+      <details class="muted-box" style="margin-top:12px">
+        <summary>说明：外部追加机制如何生效</summary>
+        <div class="meta">新增/删除仅修改 <code>state/whitelist-extra.json</code>（幂等、校验后写入）。qq-tool-restrict.mjs 在<b>每次 DSH 网关启动时</b>读取并合并该文件到执行期白名单；内置基线条目（源码中的 BASE_SAFE_EXACT / BASE_SAFE_PREFIXES）不受 API 影响。若重启后仍被拒绝，请先确认工具名拼写与插件实际注册名一致。</div>
+      </details>
     </section>
 <section id="section-whitelist" data-page="access" class="card span-all">
       <h2>白名单 / 管理员</h2>
@@ -4433,8 +4502,171 @@ const consolePages = {
   usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。'],
   access: ['访问与安全', '明确边界，安心连接。', '管理允许对话的对象、管理员权限与控制台访问凭证。'],
   operations: ['调试与运维', '让桥接，始终井然有序。', '测试消息、引导 AI，或维护桥接进程与会话工作区。'],
-  reference: ['工具参考', '每一种能力，都清晰可见。', '查看桥接提供给 DSH 的 MCP 工具与用途。']
+  reference: ['工具参考', '每一种能力，都清晰可见。', '查看桥接提供给 DSH 的 MCP 工具与用途。'],
+  plugins: ['工具白名单', '让能力边界，一目了然。', '查看与管理 DSH 网关 QQ 会话的工具白名单；新增/删除后一键重启生效。']
 };
+
+// ── 工具白名单（qq-tool-restrict）管理 ──────────────────────────────────────
+const toolWlState = { base: { exact: [], prefixes: [] }, external: { exact: [], prefixes: [] }, exact: [], prefixes: [] };
+let toolWlDirty = false;
+
+async function toolWlLoad() {
+  const msg = document.getElementById('toolWlMsg');
+  msg.textContent = '正在读取白名单…';
+  const data = await api('/api/tool-whitelist', 'GET').catch((err) => ({ ok: false, error: String(err) }));
+  if (!data || !data.ok) {
+    msg.textContent = '读取白名单失败：' + (data?.error ?? '未知错误');
+    return;
+  }
+  toolWlState.base = data.base || { exact: [], prefixes: [] };
+  toolWlState.external = data.external || { exact: [], prefixes: [] };
+  toolWlState.exact = data.exact || [];
+  toolWlState.prefixes = data.prefixes || [];
+  toolWlDirty = false;
+  msg.textContent = '';
+  toolWlRender();
+}
+
+function toolWlRender() {
+  const list = document.getElementById('toolWlList');
+  const kw = (document.getElementById('toolWlFilter').value || '').trim().toLowerCase();
+  document.getElementById('toolWlBaseCount').textContent = toolWlState.base.exact.length;
+  document.getElementById('toolWlExtraCount').textContent = toolWlState.external.exact.length + toolWlState.external.prefixes.length;
+  document.getElementById('toolWlTotalCount').textContent = toolWlState.exact.length + toolWlState.prefixes.length;
+  const rows = [];
+  const isExternal = (v, kind) => (kind === 'prefix' ? toolWlState.external.prefixes.includes(v) : toolWlState.external.exact.includes(v));
+  for (const name of toolWlState.exact) {
+    if (kw && !name.toLowerCase().includes(kw)) continue;
+    const ext = isExternal(name, 'exact');
+    const safe = esc(name);
+    rows.push(`<span class="tool-wl-chip" data-kind="exact"><code>${safe}</code><span class="tool-wl-badge">${ext ? '追加' : '内置'}</span>${ext ? `<button data-remove="exact" data-name="${safe}">删除</button>` : ''}</span>`);
+  }
+  for (const name of toolWlState.prefixes) {
+    if (kw && !name.toLowerCase().includes(kw)) continue;
+    const ext = isExternal(name, 'prefix');
+    const safe = esc(name);
+    rows.push(`<span class="tool-wl-chip" data-kind="prefix"><code>${safe}</code><span class="tool-wl-badge">${ext ? '追加前缀' : '内置前缀'}</span>${ext ? `<button data-remove="prefix" data-name="${safe}">删除</button>` : ''}</span>`);
+  }
+  list.innerHTML = rows.length ? rows.join('') : '<span class="meta">没有匹配的条目</span>';
+  toolWlRenderState();
+}
+
+function toolWlRenderState() {
+  const saveBtn = document.getElementById('toolWlSave');
+  saveBtn.disabled = !toolWlDirty;
+  saveBtn.textContent = toolWlDirty ? '保存并重启 DSH 网关' : '保存并重启 DSH 网关';
+}
+
+async function toolWlUpdate(op, value) {
+  const msg = document.getElementById('toolWlMsg');
+  const res = await api('/api/tool-whitelist', 'POST', { op, entry: value }).catch((err) => ({ ok: false, error: String(err) }));
+  if (!res || !res.ok) {
+    msg.textContent = (res?.error ?? '操作失败') + (res?.note ? '；' + res.note : '');
+    return false;
+  }
+  msg.textContent = '已' + (op === 'add' ? '新增' : '删除') + '：' + value + '（重启 DSH 网关后生效）';
+  toolWlState.external = res.external || { exact: [], prefixes: [] };
+  toolWlState.exact = res.effective?.exact || toolWlState.exact;
+  toolWlState.prefixes = res.effective?.prefixes || toolWlState.prefixes;
+  toolWlDirty = true;
+  toolWlRender();
+  return true;
+}
+
+// 批量导入：按行/逗号/空格解析 → 内部去重 → 本地校验（前缀/精确/非法）→
+// 与当前生效列表比对去重（含内置基线）→ 一次性批量提交后端（后端 entries 数组接口）。
+async function toolWlBulkImport() {
+  const input = document.getElementById('toolWlBulkInput');
+  const msg = document.getElementById('toolWlBulkMsg');
+  const raw = input.value;
+  const items = raw.split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean);
+  if (!items.length) { msg.textContent = '请先粘贴要导入的工具条目（每行一个，或逗号/空格分隔）'; return; }
+  const seen = new Set();
+  const uniq = [];
+  for (const it of items) { if (!seen.has(it)) { seen.add(it); uniq.push(it); } }
+  const existing = new Set([...toolWlState.exact, ...toolWlState.prefixes]);
+  const prefixRe = /^[A-Za-z0-9_]+(__[A-Za-z0-9_]+)*__$/;
+  const exactRe = /^[A-Za-z0-9_]+$/;
+  const invalid = [];
+  const duplicate = [];
+  const toAdd = [];
+  for (const it of uniq) {
+    if (!prefixRe.test(it) && !exactRe.test(it)) { invalid.push(it); continue; }
+    if (existing.has(it)) { duplicate.push(it); continue; }
+    toAdd.push(it);
+  }
+  if (!toAdd.length) {
+    let parts = ['没有可新增的条目'];
+    if (duplicate.length) parts.push(`重复 ${duplicate.length} 条`);
+    if (invalid.length) parts.push(`非法 ${invalid.length} 条`);
+    msg.textContent = parts.join('，');
+    return;
+  }
+  const btn = document.getElementById('toolWlBulkAdd');
+  btn.disabled = true;
+  msg.textContent = `正在批量导入 ${toAdd.length} 条…`;
+  const res = await api('/api/tool-whitelist', 'POST', { op: 'add', entries: toAdd }).catch((err) => ({ ok: false, error: String(err) }));
+  btn.disabled = false;
+  if (!res || !res.ok) {
+    msg.textContent = (res?.error ?? '批量导入失败') + (res?.note ? '；' + res.note : '');
+    return;
+  }
+  toolWlState.external = res.external || { exact: [], prefixes: [] };
+  toolWlState.exact = res.effective?.exact || toolWlState.exact;
+  toolWlState.prefixes = res.effective?.prefixes || toolWlState.prefixes;
+  toolWlDirty = true;
+  toolWlRender();
+  input.value = '';
+  const parts = [`成功导入 ${toAdd.length} 条`];
+  if (duplicate.length) parts.push(`重复跳过 ${duplicate.length} 条`);
+  if (invalid.length) parts.push(`非法忽略 ${invalid.length} 条`);
+  msg.textContent = parts.join('，') + '（重启 DSH 网关后生效）';
+}
+
+async function toolWlRestart() {
+  const btn = document.getElementById('toolWlSave');
+  const msg = document.getElementById('toolWlRestartMsg');
+  btn.disabled = true;
+  msg.textContent = '正在重启 DSH 网关（杀进程 → 等 3080 释放 → 重新启动 → 轮询就绪），约需 1 分钟…';
+  const res = await api('/api/tool-whitelist/restart', 'POST').catch((err) => ({ ok: false, error: String(err) }));
+  btn.disabled = false;
+  if (res && res.ok) {
+    msg.textContent = res.message || 'DSH 网关已重启完成';
+    toolWlDirty = false;
+    toolWlRenderState();
+  } else {
+    msg.textContent = (res?.message || res?.error || '网关重启失败') + '；可稍后重试';
+  }
+}
+
+(function initToolWhitelist() {
+  const addBtn = document.getElementById('toolWlAdd');
+  const input = document.getElementById('toolWlInput');
+  const msg = document.getElementById('toolWlMsg');
+  addBtn.addEventListener('click', () => {
+    const value = input.value.trim();
+    if (!value) { msg.textContent = '请输入要新增的工具条目'; return; }
+    toolWlUpdate('add', value).then((ok) => { if (ok) input.value = ''; });
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click(); });
+  const bulkAddBtn = document.getElementById('toolWlBulkAdd');
+  const bulkInput = document.getElementById('toolWlBulkInput');
+  bulkAddBtn.addEventListener('click', toolWlBulkImport);
+  bulkInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) bulkAddBtn.click(); });
+  document.getElementById('toolWlFilter').addEventListener('input', toolWlRender);
+  document.getElementById('toolWlClearFilter').addEventListener('click', () => { document.getElementById('toolWlFilter').value = ''; toolWlRender(); });
+  document.getElementById('toolWlList').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-remove]');
+    if (!btn) return;
+    const kind = btn.getAttribute('data-remove');
+    const value = btn.getAttribute('data-name');
+    toolWlUpdate('remove', value);
+  });
+  document.getElementById('toolWlSave').addEventListener('click', toolWlRestart);
+  // 页面加载时若直接落在 #plugins 路由，立即加载数据。
+  if (location.hash === '#plugins' || location.hash === '#plugins/') toolWlLoad();
+})();
+
 let currentConsolePage = 'overview';
 let toastTimer;
 function showConsoleToast(message) {
@@ -4462,6 +4694,8 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   closeConsoleSearch();
   // 语音库按需加载：进入二代仿真页时才探测（避免每次开控制台都压网关）。
   if (page === 'social-v2' && typeof loadVoiceLibrary === 'function') loadVoiceLibrary();
+  // 工具白名单按需加载：进入白名单页时才读取（避免每次开控制台都压网关）。
+  if (page === 'plugins' && typeof toolWlLoad === 'function') toolWlLoad();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
     document.getElementById(target || 'mainContent')?.scrollIntoView({ block: 'start', behavior: 'instant' });
@@ -4518,6 +4752,28 @@ document.getElementById('refreshConsole').addEventListener('click', async functi
   await Promise.allSettled([refresh(), refreshSessions(), refreshPending(), refreshSocialStatus(), refreshV2Activity()]);
   this.disabled = false;
   if (document.getElementById('connectionAlert').hidden) showConsoleToast('运行状态已刷新');
+});
+// 顶栏独立「重启 DSH 网关」：纯重启（不保存任何配置），复用 /api/tool-whitelist/restart。
+document.getElementById('restartDshTopBtn').addEventListener('click', async function () {
+  if (!window.confirm('将中断 DSH 网关约 1 分钟，QQ 桥接可能短暂断连，确认重启？')) return;
+  const original = this.innerHTML;
+  this.disabled = true;
+  this.innerHTML = '正在重启 DSH 网关…';
+  const t0 = Date.now();
+  let res;
+  try {
+    res = await api('/api/tool-whitelist/restart', 'POST', {});
+  } catch (error) {
+    res = { ok: false, error: error?.message || String(error) };
+  }
+  const secs = ((Date.now() - t0) / 1000).toFixed(1);
+  this.disabled = false;
+  this.innerHTML = original;
+  if (res?.ok) {
+    showConsoleToast(`DSH 网关重启完成：杀掉 ${res.killed ?? 0} 个进程，3080 已就绪（HTTP ${res.up?.status ?? 401}），耗时 ${secs}s`);
+  } else {
+    showConsoleToast(`DSH 网关重启未成功：${res?.message || res?.error || '未知错误'}（耗时 ${secs}s）`);
+  }
 });
 
 // Attach real accessible names to the original form controls, including paired min/max inputs.
