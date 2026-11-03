@@ -12,7 +12,7 @@ import os from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import yaml from 'js-yaml';
 import { extractPresetPrefix, presetPromptBlockers, presetPromptWarnings, renderPresetPromptYaml } from './preset-prompt.js';
 import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport, selectRoleText } from './role-card.js';
@@ -60,6 +60,7 @@ import {
   applyStickerNote,
   markStickerUsed
 } from './sticker-lib.js';
+import { BASE_SAFE_EXACT, BASE_SAFE_PREFIXES } from '../plugins/qq-agent-presets/qq-tool-restrict.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -78,6 +79,29 @@ const TOOL_LOG_FILE = path.join(STATE_DIR, 'tool-calls.jsonl');
 const TOKEN_USAGE_FILE = path.join(STATE_DIR, 'token-usage.jsonl');
 const ACTIVITY_LOG = path.join(STATE_DIR, 'qq-activity.log');
 const BRIDGE_LOG = path.join(STATE_DIR, 'bridge.log');
+
+// 工具白名单（qq-tool-restrict）外部追加配置：控制台页只读写这一份 JSON，
+// qq-tool-restrict.mjs 启动时合并进执行期白名单（详见该文件「外部追加白名单」段）。
+const TOOL_WHITELIST_EXTRA_FILE = path.join(STATE_DIR, 'whitelist-extra.json');
+// DSH 网关（dsh-web，3080）重启参数：进程匹配串 / 探活端口 / 启动脚本。
+const DSH_WEB_PORT = 3080;
+const DSH_WEB_PROC_MATCH = 'cli.js.*--profile web';
+// ⚠️ 启动脚本**不内置默认路径**：这条路径每台机器都不一样（含用户目录、Marvis 用户
+// 标识与会话 ID），写死进源码等于把本机标识发布出去。请二选一提供：
+//   ① 环境变量 DSH_WEB_RESTART_SCRIPT
+//   ② config.json 的 dsh.webRestartScript（config.json 不入库）
+// 两者都没有时，控制台「重启 DSH 网关」会返回明确的配置缺失提示，而不是去猜路径。
+function resolveDshWebRestartScript() {
+  const fromEnv = String(process.env.DSH_WEB_RESTART_SCRIPT ?? '').trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const file = readJsonSafe(path.join(ROOT, 'config.json'), null);
+    const fromCfg = String(file?.dsh?.webRestartScript ?? '').trim();
+    if (fromCfg) return fromCfg;
+  } catch { /* 配置缺失/损坏时按未配置处理，由调用方给出提示 */ }
+  return '';
+}
+let dshRestartRunning = false;
 
 /**
  * 模式拼写的**唯一**归一入口（输入边界）。
@@ -208,6 +232,204 @@ function atomicWriteText(file, text) {
     try { fs.unlinkSync(tmp); } catch {}
     throw error;
   }
+}
+
+// ── 工具白名单（qq-tool-restrict）管理 ──────────────────────────────────────
+// 读取外部追加白名单（state/whitelist-extra.json），结构：{ exact: [], prefixes: [] }。
+function readToolWhitelistExtra() {
+  const empty = { exact: [], prefixes: [] };
+  const obj = readJsonSafe(TOOL_WHITELIST_EXTRA_FILE, null);
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return empty;
+  const clean = (list) => (Array.isArray(list)
+    ? [...new Set(list.map(String).map((s) => s.trim()).filter((s) => s && !/\s/.test(s)))]
+    : []);
+  return { exact: clean(obj.exact), prefixes: clean(obj.prefixes) };
+}
+
+// 当前生效视图：内置基线 + 外部追加（qq-tool-restrict.mjs 的 SAFE_EXACT/SAFE_PREFIXES
+// 由同一份 JSON 合并而来，启动时同源；此处仅为控制台展示与校验用）。
+function toolWhitelistView() {
+  const extra = readToolWhitelistExtra();
+  return {
+    base: { exact: [...BASE_SAFE_EXACT], prefixes: [...BASE_SAFE_PREFIXES] },
+    external: extra,
+    exact: [...new Set([...BASE_SAFE_EXACT, ...extra.exact])],
+    prefixes: [...new Set([...BASE_SAFE_PREFIXES, ...extra.prefixes])],
+  };
+}
+
+// 校验单个追加条目：精确名必须形如 [A-Za-z0-9_]+；前缀必须为 `name__` 或
+// `mcp__xxx__` 形式（至少一个命名段 + 尾随双下划线）。拒绝空白与非法符号。
+function validateWhitelistEntry(entry) {
+  const value = String(entry ?? '').trim();
+  if (!value) return { ok: false, error: '条目不能为空' };
+  if (/\s/.test(value)) return { ok: false, error: `条目不能包含空白字符：${value}` };
+  // 前缀：至少一个命名段 + 尾随双下划线（如 mcp__ns__、tool_name__）；精确名：纯 [A-Za-z0-9_]。
+  // 先判前缀：`[A-Za-z0-9_]+` 已涵盖下划线，若先判精确名会把 `mcp__ns__` 误归为精确名。
+  if (/^[A-Za-z0-9_]+(__[A-Za-z0-9_]+)*__$/.test(value)) {
+    return { ok: true, value, kind: 'prefix' };
+  }
+  if (/^[A-Za-z0-9_]+$/.test(value)) {
+    return { ok: true, value, kind: 'exact' };
+  }
+  return { ok: false, error: `条目只能包含字母/数字/下划线（精确名如 tool_name，前缀如 mcp__ns__）：${value}` };
+}
+
+// 应用控制台增删请求：只写外部 JSON，绝不回改 .mjs 源码。
+function applyToolWhitelistUpdate(body) {
+  const op = String(body?.op ?? '').trim();
+  if (!['add', 'remove'].includes(op)) throw new Error('op 必须是 add 或 remove');
+  const current = readToolWhitelistExtra();
+  const next = { exact: [...current.exact], prefixes: [...current.prefixes] };
+
+  if (op === 'add') {
+    const entries = Array.isArray(body?.entries) ? body.entries : [body?.entry];
+    let added = 0;
+    for (const raw of entries) {
+      if (raw === undefined || raw === null) continue;
+      const { ok, error, value, kind } = validateWhitelistEntry(raw);
+      if (!ok) throw new Error(`新增失败：${error}`);
+      const key = kind === 'prefix' ? 'prefixes' : 'exact';
+      if (BASE_SAFE_EXACT.includes(value) || BASE_SAFE_PREFIXES.includes(value)) {
+        throw new Error(`新增失败：${value} 已存在于内置基线条目（源码权威，API 不修改内置条目）`);
+      }
+      if (next[key].includes(value)) throw new Error(`新增失败：${value} 已在追加白名单中`);
+      next[key].push(value);
+      added += 1;
+    }
+    if (added === 0) throw new Error('没有可新增的条目');
+  } else {
+    const entries = Array.isArray(body?.entries) ? body.entries : [body?.entry];
+    let removed = 0;
+    for (const raw of entries) {
+      const value = String(raw ?? '').trim();
+      if (!value) continue;
+      const idxE = next.exact.indexOf(value);
+      const idxP = next.prefixes.indexOf(value);
+      if (idxE >= 0) { next.exact.splice(idxE, 1); removed += 1; }
+      else if (idxP >= 0) { next.prefixes.splice(idxP, 1); removed += 1; }
+      else if (BASE_SAFE_EXACT.includes(value) || BASE_SAFE_PREFIXES.includes(value)) {
+        throw new Error(`删除失败：${value} 是内置基线条目，不可经 API 删除（请在 qq-tool-restrict.mjs 源码中调整）`);
+      }
+    }
+    if (removed === 0) throw new Error('没有可删除的追加条目');
+  }
+
+  atomicWriteJson(TOOL_WHITELIST_EXTRA_FILE, next);
+  return {
+    external: next,
+    effective: {
+      exact: [...new Set([...BASE_SAFE_EXACT, ...next.exact])],
+      prefixes: [...new Set([...BASE_SAFE_PREFIXES, ...next.prefixes])],
+    },
+  };
+}
+
+// ── DSH 网关（dsh-web）重启 ─────────────────────────────────────────────────
+// 探测端口是否可连（GET 一次即可；DSH 返回 401 表示网关已就绪）。
+function probePort(port, timeoutMs = 2500) {
+  return new Promise((resolve) => {
+    const req = http.get({ hostname: '127.0.0.1', port, timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve({ ok: true, status: res.statusCode });
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, status: 0 }); });
+    req.on('error', () => resolve({ ok: false, status: 0 }));
+    req.setTimeout(timeoutMs);
+  });
+}
+
+function waitPortGone(port, timeoutMs = 20000) {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const tick = async () => {
+      const p = await probePort(port, 1200);
+      if (!p.ok || Date.now() - start >= timeoutMs) return resolve(p);
+      setTimeout(tick, 500);
+    };
+    tick();
+  });
+}
+
+// 执行命令并捕获 stdout/stderr（不抛异常，供日志）。
+function execCapture(cmd, args, opts = {}) {
+  try { return { ok: true, stdout: execFileSync(cmd, args, { encoding: 'utf8', ...opts }) }; }
+  catch (error) { return { ok: false, stdout: String(error?.stdout ?? ''), stderr: String(error?.stderr ?? error?.message ?? error) }; }
+}
+
+// 分离启动 .cmd（start-dsh-web.cmd）：Windows 上 spawn 不能直接执行 .cmd/.bat，
+// 必须经 cmd.exe /c 包装；其余可执行文件直接 spawn。detached + unref 使其脱离桥接进程存活。
+function spawnDetached(scriptPath) {
+  return new Promise((resolve, reject) => {
+    const isCmd = /\.(cmd|bat)$/i.test(scriptPath);
+    const child = isCmd
+      ? spawn('cmd.exe', ['/c', scriptPath], { detached: true, stdio: 'ignore', windowsHide: true })
+      : spawn(scriptPath, { detached: true, stdio: 'ignore', windowsHide: true });
+    child.on('error', reject);
+    child.unref();
+    resolve();
+  });
+}
+
+// Windows：杀掉命令行匹配 DSH_WEB_PROC_MATCH 的 DeepSeek Harness.exe 进程（含子进程树）。
+// 先枚举 PID → taskkill /T /F 逐个强杀（含子进程树）→ 二次枚举验证残留，
+// 确保 kill 真正生效后才返回；杀不掉时明确报告 remaining，避免上层白等端口超时。
+function killDshWebWin() {
+  const listCmd = `Get-CimInstance Win32_Process -Filter "Name='DeepSeek Harness.exe'" | Where-Object { $_.CommandLine -match '${DSH_WEB_PROC_MATCH}' } | Select-Object -ExpandProperty ProcessId`;
+  const ps = execCapture('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', listCmd]);
+  if (!ps.ok) return { killed: 0, remaining: 0, note: `枚举进程失败：${ps.stderr ?? ps.stdout}` };
+  const pids = [...new Set(ps.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean))];
+  if (!pids.length) return { killed: 0, remaining: 0, note: '未找到匹配的 DeepSeek Harness.exe 进程' };
+  const errs = [];
+  for (const pid of pids) {
+    const tk = execCapture('taskkill.exe', ['/PID', pid, '/T', '/F']);
+    if (!tk.ok) errs.push(`PID ${pid}: ${String(tk.stderr ?? tk.stdout).split(/\r?\n/)[0]}`);
+  }
+  const after = execCapture('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', listCmd]);
+  const remainPids = after.ok ? [...new Set(after.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean))] : [];
+  const remaining = after.ok ? remainPids.length : -1;
+  const killed = pids.length - (remaining > 0 ? remaining : 0);
+  const note = errs.length ? errs.join('；') : (remaining > 0 ? `仍有 ${remaining} 个进程未被杀死` : '');
+  return { killed, remaining, note };
+}
+
+// 完整重启流程：杀进程 → 等 3080 释放 → 调启动脚本 → 轮询 3080 返回 401（或超时）。
+async function restartDshWebGateway() {
+  const killedInfo = killDshWebWin();
+  const killed = killedInfo.killed ?? 0;
+  const remaining = killedInfo.remaining ?? 0;
+  // 给进程退出与端口释放留缓冲后立即复核：若 3080 仍可达说明 kill 未生效，
+  // 直接中止并给出明确原因，不再无谓等待 waitPortGone 超时（旧行为会白等 20s 后 502）。
+  await new Promise((r) => setTimeout(r, 1500));
+  const quickProbe = await probePort(DSH_WEB_PORT, 1200);
+  if (quickProbe.ok) {
+    const hint = remaining > 0
+      ? `仍有 ${remaining} 个网关进程未被杀死（可能权限不足，请手动结束 DSH 网关进程后重试）`
+      : (killedInfo.note || '3080 仍被占用，可能有其它进程监听该端口');
+    return { killed, remaining, error: `3080 未能释放（仍返回 ${quickProbe.status}）；${hint}` };
+  }
+  await waitPortGone(DSH_WEB_PORT, 20000);
+  const probeBefore = await probePort(DSH_WEB_PORT, 1200);
+  if (probeBefore.ok) {
+    return { killed, remaining, error: `3080 端口未能释放（仍返回 ${probeBefore.status}），已中止重启；请检查是否有其它进程占用` };
+  }
+  const dshWebScript = resolveDshWebRestartScript();
+  if (!dshWebScript) {
+    return {
+      killed,
+      remaining,
+      error: '未配置 DSH 网关启动脚本：请设置环境变量 DSH_WEB_RESTART_SCRIPT，或在 config.json 里填 dsh.webRestartScript（该路径每台机器不同，故不内置默认值）',
+    };
+  }
+  await spawnDetached(dshWebScript);
+  const deadline = Date.now() + 75000;
+  let up = null;
+  while (Date.now() < deadline) {
+    up = await probePort(DSH_WEB_PORT, 1200);
+    if (up.ok && up.status === 401) return { killed, remaining, up };
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return { killed, remaining, up, error: `等待 3080 就绪超时（最后状态=${up ? up.status : '不可达'}）；请查看 start-dsh-web.cmd 输出` };
 }
 
 // 控制台鉴权 token：未配置时自动生成并持久化到 state/console-token，避免默认无鉴权。
@@ -4585,6 +4807,45 @@ async function main() {
           reconcileSessionPolicies();
           log(`控制台：白名单已更新（群: ${allow.groups.join(',') || '无'}，私聊: ${allow.private.join(',') || '无'}，管理员: ${ownerQQ ?? '未设置'}）`);
           sendJson({ ok: true, allow, deny, ownerQQ });
+          return;
+        }
+
+        // ── 工具白名单（qq-tool-restrict） ─────────────────────────────────────
+        if (req.method === 'GET' && url.pathname === '/api/tool-whitelist') {
+          sendJson({ ok: true, ...toolWhitelistView() });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/tool-whitelist') {
+          let body;
+          try { body = await readBody(); }
+          catch (error) { sendJson({ ok: false, error: error?.message ?? String(error) }, error?.statusCode || 400); return; }
+          try {
+            const view = applyToolWhitelistUpdate(body);
+            log(`控制台：工具白名单外部条目已更新（exact ${view.external.exact.length} 条 / prefixes ${view.external.prefixes.length} 条）`);
+            sendJson({ ok: true, ...view, note: '已写入 state/whitelist-extra.json；重启 DSH 网关（3080）后生效' });
+          } catch (error) {
+            sendJson({ ok: false, error: error?.message ?? String(error) }, 400);
+          }
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/tool-whitelist/restart') {
+          if (dshRestartRunning) { sendJson({ ok: false, error: '网关重启已在执行中，请稍候再试' }, 409); return; }
+          dshRestartRunning = true;
+          try {
+            const result = await restartDshWebGateway();
+            const ok = Boolean(result?.up?.ok);
+            sendJson({
+              ok,
+              ...result,
+              message: ok
+                ? `DSH 网关已重启完成（杀掉 ${result.killed ?? 0} 个进程，3080 已就绪并返回 ${result.up?.status}）`
+                : `网关重启未确认成功（killed=${result.killed ?? 0}, 3080 状态=${result.up?.status ?? '未知'}，${result.error ?? ''}）；请检查 start-dsh-web.cmd 日志`,
+            }, ok ? 200 : 502);
+          } catch (error) {
+            sendJson({ ok: false, error: `网关重启失败：${error?.message ?? error}` }, 500);
+          } finally {
+            dshRestartRunning = false;
+          }
           return;
         }
 
