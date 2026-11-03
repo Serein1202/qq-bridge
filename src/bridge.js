@@ -80,6 +80,53 @@ const TOKEN_USAGE_FILE = path.join(STATE_DIR, 'token-usage.jsonl');
 const ACTIVITY_LOG = path.join(STATE_DIR, 'qq-activity.log');
 const BRIDGE_LOG = path.join(STATE_DIR, 'bridge.log');
 
+// 自杀式重启辅助脚本（每次重启前写入 state/restart-helper.cjs 并 detached 派发）：
+// 等待旧进程退出并释放 3100 后，用相同方式重新拉起 `node src\bridge.js`（工作目录为仓库根），
+// 规避新旧进程同时监听 3100 导致 EADDRINUSE。用法：node restart-helper.cjs <oldPid> <port> <cwd>
+const RESTART_HELPER_SRC = [
+  'const { spawn } = require("child_process");',
+  'const net = require("net");',
+  'const fs = require("fs");',
+  'const path = require("path");',
+  'const [oldPid, portStr, cwd] = process.argv.slice(2);',
+  'const port = Number(portStr) || 3100;',
+  'const nodeBin = process.execPath;',
+  'const scriptRel = "src" + path.sep + "bridge.js";',
+  'function portOpen(p) {',
+  '  return new Promise((resolve) => {',
+  '    const s = net.connect({ host: "127.0.0.1", port: p, timeout: 800 }, () => { s.destroy(); resolve(true); });',
+  '    s.on("error", () => { s.destroy(); resolve(false); });',
+  '    s.on("timeout", () => { s.destroy(); resolve(false); });',
+  '  });',
+  '}',
+  'async function waitClosed(p, ms) {',
+  '  const start = Date.now();',
+  '  while (Date.now() - start < ms) {',
+  '    if (!(await portOpen(p))) return true;',
+  '    await new Promise((r) => setTimeout(r, 400));',
+  '  }',
+  '  return false;',
+  '}',
+  'function note(msg) {',
+  '  try { fs.appendFileSync(path.join(cwd, "state", "restart-helper.log"), new Date().toISOString() + " " + msg + "\\n"); } catch {}',
+  '}',
+  '(async () => {',
+  '  const released = await waitClosed(port, 25000);',
+  '  if (!released) { note("release-failed old=" + (oldPid || "?")); process.exit(2); }',
+  '  await new Promise((r) => setTimeout(r, 1200));',
+  '  const child = spawn(nodeBin, [scriptRel], { cwd, detached: true, stdio: "ignore", windowsHide: true });',
+  '  child.unref();',
+  '  const start = Date.now();',
+  '  let up = false;',
+  '  while (Date.now() - start < 30000) {',
+  '    if (await portOpen(port)) { up = true; break; }',
+  '    await new Promise((r) => setTimeout(r, 500));',
+  '  }',
+  '  note("old=" + (oldPid || "?") + " released=" + released + " up=" + up + " child=" + (child.pid || "?"));',
+  '  process.exit(up ? 0 : 3);',
+  '})().catch((e) => { note("error=" + String((e && e.message) || e)); process.exit(4); });',
+].join('\n');
+
 // 工具白名单（qq-tool-restrict）外部追加配置：控制台页只读写这一份 JSON，
 // qq-tool-restrict.mjs 启动时合并进执行期白名单（详见该文件「外部追加白名单」段）。
 const TOOL_WHITELIST_EXTRA_FILE = path.join(STATE_DIR, 'whitelist-extra.json');
@@ -8042,6 +8089,32 @@ async function main() {
             releaseLock();
             process.exit(0);
           }, 500);
+          return;
+        }
+        // ── 重启 QQ 桥接自身（自杀式安全重启，不依赖守护进程） ────────────────
+        // 流程：先响应前端 → 落盘 → spawn detached 辅助进程 → 本进程延时退出。
+        // 辅助进程等待旧进程退出、3100 释放后，用相同方式重新拉起 node src\bridge.js，
+        // 从而规避新旧进程同时监听 3100 导致的 EADDRINUSE。
+        if (req.method === 'POST' && url.pathname === '/api/bridge/restart') {
+          sendJson({ ok: true, message: '正在重启 QQ 桥接服务自身（3100 将中断数秒，随后自动恢复）…' });
+          setTimeout(() => {
+            log('控制台：重启 QQ 桥接服务自身（3100）');
+            try { saveState(); } catch (error) { log('重启前保存会话映射失败:', error?.message ?? error); }
+            try { saveSocialV2State(); } catch (error) { log('重启前保存二代会话状态失败:', error?.message ?? error); }
+            releaseLock();
+            try {
+              const helperPath = path.join(STATE_DIR, 'restart-helper.cjs');
+              fs.writeFileSync(helperPath, RESTART_HELPER_SRC, 'utf8');
+              const child = spawn(process.execPath, [helperPath, String(process.pid), String(port), ROOT], {
+                cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true,
+              });
+              child.unref();
+              log(`已派发重启辅助进程（旧进程 pid=${process.pid}，辅助=${child.pid ?? '?'}）`);
+            } catch (error) {
+              log('派发重启辅助进程失败，仅退出（3100 不会自动恢复）:', error?.message ?? error);
+            }
+            process.exit(0);
+          }, 800);
           return;
         }
         sendJson({ ok: false, error: 'not found' }, 404);

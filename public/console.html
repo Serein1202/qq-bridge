@@ -1815,7 +1815,7 @@ button:active:not(:disabled) {
   <div class="workspace">
     <header class="topbar">
       <div class="breadcrumb">工作空间<span>/</span><span id="breadcrumbPage">运行总览</span></div>
-      <div class="topbar-actions"><span class="status-badge" id="statusText" role="status">正在连接…</span><button id="themeToggle" class="icon-button" type="button" aria-label="切换深色模式" aria-pressed="false" title="切换深色 / 浅色主题">☾</button><button id="refreshConsole" class="icon-button" aria-label="刷新控制台状态" title="刷新状态">↻</button><button id="restartDshTopBtn" class="topbar-restart" type="button" title="重启 DSH 网关（3080）">⟳ 重启 DSH 网关</button></div>
+      <div class="topbar-actions"><span class="status-badge" id="statusText" role="status">正在连接…</span><button id="themeToggle" class="icon-button" type="button" aria-label="切换深色模式" aria-pressed="false" title="切换深色 / 浅色主题">☾</button><button id="refreshConsole" class="icon-button" aria-label="刷新控制台状态" title="刷新状态">↻</button><button id="restartDshTopBtn" class="topbar-restart" type="button" title="重启 DSH 网关（3080）">⟳ 重启 DSH 网关</button><button id="restartBridgeTopBtn" class="topbar-restart" type="button" title="重启 QQ 桥接服务自身（3100）">⟳ 重启 QQ 桥接</button></div>
     </header>
     <main id="mainContent" tabindex="-1">
       <div class="page-heading"><div><div class="eyebrow">QQ BRIDGE / CONSOLE</div><h1 id="pageTitle">让每一次连接，都自然发生。</h1><p id="pageDescription">掌握桥接状态，轻松管理你的 QQ 智能伙伴。</p></div>
@@ -4773,6 +4773,45 @@ document.getElementById('restartDshTopBtn').addEventListener('click', async func
     showConsoleToast(`DSH 网关重启完成：杀掉 ${res.killed ?? 0} 个进程，3080 已就绪（HTTP ${res.up?.status ?? 401}），耗时 ${secs}s`);
   } else {
     showConsoleToast(`DSH 网关重启未成功：${res?.message || res?.error || '未知错误'}（耗时 ${secs}s）`);
+  }
+});
+
+// 顶栏独立「重启 QQ 桥接」：自杀式安全重启自身（3100），提交后轮询等待服务恢复。
+document.getElementById('restartBridgeTopBtn').addEventListener('click', async function () {
+  if (!window.confirm('将中断 3100 控制台与 QQ 桥接约几秒，确认重启？')) return;
+  const original = this.innerHTML;
+  this.disabled = true;
+  this.innerHTML = '正在重启 QQ 桥接…';
+  const t0 = Date.now();
+  let res;
+  try {
+    res = await api('/api/bridge/restart', 'POST', {});
+  } catch (error) {
+    res = { ok: false, error: error?.message || String(error) };
+  }
+  if (!res?.ok) {
+    this.disabled = false;
+    this.innerHTML = original;
+    showConsoleToast(`QQ 桥接重启未成功：${res?.message || res?.error || '未知错误'}（耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s）`);
+    return;
+  }
+  showConsoleToast('重启已提交，3100 正在恢复…');
+  // 轮询服务恢复：/api/status 返回 200/401 都说明 3100 已重新监听，最多等 60s。
+  let recovered = false;
+  const deadline = Date.now() + 60000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2000));
+    try {
+      const r = await fetch('/api/status');
+      if (r.status >= 200 && r.status < 500) { recovered = true; break; }
+    } catch (error) { /* 服务未恢复，继续等 */ }
+  }
+  this.disabled = false;
+  this.innerHTML = original;
+  if (recovered) {
+    showConsoleToast(`QQ 桥接服务已就绪（3100），耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  } else {
+    showConsoleToast('QQ 桥接重启超时：3100 尚未恢复，请检查服务状态', true);
   }
 });
 
