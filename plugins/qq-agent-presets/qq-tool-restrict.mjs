@@ -210,7 +210,7 @@ const KNOWN_DANGEROUS_GLOBAL_TOOLS = [
 // 供 test-preset-local-tools.mjs 导入并与 DSH 真实工具名对账，避免两份名单漂移。
 export const RESTRICTED_TOOL_NAMES = Object.freeze([...KNOWN_DANGEROUS_GLOBAL_TOOLS])
 
-// 高权限命名空间：**2026-11-02 起默认进入内置基线**（应部署者要求默认挂载）。
+// 高权限命名空间：**默认不进内置基线**（2026-10-30 曾误并入、随即回退，见 RULES.md 第 2 条）。
 //
 // 风险说明：
 //   · `mcp__phone__`    —— 经 adb 全权控制手机（点按/输入/截图/录屏/装 app/连任意 host:port），
@@ -223,11 +223,14 @@ export const RESTRICTED_TOOL_NAMES = Object.freeze([...KNOWN_DANGEROUS_GLOBAL_TO
 // 它们与 L7「无本地工具」铁律冲突：QQ 群会话的模型受**群友**提示词注入驱动，
 // 一旦前缀在内置基线里，群友一句话就能让 AI 操作手机、发说说、读日记，
 // 再用 `qq_send_message` 把内容回吐到群里。RULES.md / SECURITY_BASELINE.md
-// 此前写的是「只允许三个命名空间」——如确需收紧，将 OPTIONAL_PRIVILEGED_PREFIXES
-// 从 BASE_SAFE_PREFIXES 展开处移除并同步更新 RULES.md 即可恢复显式开启。
+// 写的是「只允许三个命名空间」——这三个前缀**不在** BASE_SAFE_PREFIXES 里。
 //
-// 默认放行（2026-11-02 起）：前缀已并入 BASE_SAFE_PREFIXES（见下方展开项）。
-// 放行前请确认：你的 QQ 会话是否会被不可信人群触达。
+// 本常量只作为「操作者要显式开启时该加哪三个」的**清单来源**，不参与任何默认放行。
+// 开启方式二选一（两步都要做，见 RULES.md）：
+//   ① 挂 MCP：node scripts/setup-dsh.mjs web --enable=phone,companion,qzone
+//   ② 放行前缀：控制台「工具白名单」加入前缀（写 state/whitelist-extra.json），
+//      或把前缀写进 BASE_SAFE_PREFIXES（源码权威，需同步改 RULES.md）。
+// 不要再往 BASE_SAFE_PREFIXES 里直接展开本数组——那等于默认放行，见上一条。
 export const OPTIONAL_PRIVILEGED_PREFIXES = Object.freeze([
   'mcp__phone__',
   'mcp__companion__',
@@ -247,57 +250,24 @@ export const BASE_SAFE_PREFIXES = [
 
 // 无害模型侧工具：ask_user_question 用于把问题转给管理员/用户，
 // todo_write 仅维护任务列表。若后续 preset 不再挂载这些工具，保留无害。
-// 注：这里是「内置基线」，外部追加条目见文件下方 loadExternalWhitelist()，
-// 控制台「工具白名单」页写入的追加项在启动时合并进执行期的 SAFE_EXACT。
+//
+// 内置基线的口径（2026-11-04 收紧）：**只放默认安装就存在的东西**。
+// 之前这里还塞了 `compress`（billion-context）与 36 个 `bili_*`（dsh-bili-scroll）——
+// 那两样都是**可选插件**，新用户默认没有，名字永远命中不到任何工具，却让基线看起来
+// 像默认拥有 B 站 / 上下文压缩能力，把真正的默认权限面糊掉了。
+//
+// 现在它们改走「外部追加白名单」这条既有通道（与 mcp__phone__ / mcp__qzone__ 同一套机制）：
+//   · 落盘位置：state/whitelist-extra.json，DSH 启动时合并进执行期 SAFE_EXACT
+//   · 写入方式：控制台「访问与安全 → 工具白名单」，或直接编辑该 JSON
+// 为什么不做成 `bili_` 前缀：前缀是 fail-open 的——插件以后新增任何 bili_* 工具都会
+// 自动放行，连危险语义的也会。逐条精确名才是 fail-closed。
+//
+// 2026-11-04：仓库不再随分发附带任何可选插件的工具名。原先的声明式清单
+// （plugin-tool-packs.json）与批量写入脚本（scripts/whitelist-add.mjs）已整体移除，
+// 本文件也不再读 pack 文件 —— 需要放行某个插件的工具时，由使用者自行追加。
 const BASE_SAFE_EXACT_SET = new Set([
   'ask_user_question',
   'todo_write',
-  // billion-context 提供的上下文压缩工具：纯模型侧操作（压缩会话历史），
-  // 不碰本地文件 / shell / 进程，属于无害模型侧工具，予以放行（2026-10-28）。
-  'compress',
-  // dsh-bili-scroll 的登录身份查询：只读 B 站当前登录账号（凭证有效性/昵称/mid），
-  // 不碰本地文件 / shell / 进程，属于无害模型侧工具，予以放行（2026-10-29）。
-  'bili_whoami',
-  // dsh-bili-scroll 的运行状态查询：只读今日是否已跑/挑了哪些/额度/报告路径/登录态/下次窗口，
-  // 不碰本地文件 / shell / 进程，属于无害模型侧工具，予以放行（2026-10-29）。
-  'bili_status',
-  // dsh-bili-scroll 其余工具全量放行（2026-10-29）：覆盖插件 index.js 注册的 13 个
-  // bili_* 工具与 vendor/bilibili-mcp（mcp_server.py @tool()）暴露的全部工具名，
-  // 均为 B 站数据查询 / 登录 / 值班任务等插件自身能力，不碰本地文件 / shell / 进程。
-  'bili_check_credential',
-  'bili_comments',
-  'bili_config',
-  'bili_cover',
-  'bili_crawl',
-  'bili_danmaku',
-  'bili_favorite_content',
-  'bili_favorite_lists',
-  'bili_frames',
-  'bili_hot_buzzwords',
-  'bili_hot_videos',
-  'bili_login',
-  'bili_login_check',
-  'bili_login_poll',
-  'bili_login_start',
-  'bili_rank',
-  'bili_received_at_and_likes',
-  'bili_received_replies',
-  'bili_recommend',
-  'bili_reply',
-  'bili_run',
-  'bili_search',
-  'bili_send_message',
-  'bili_setup',
-  'bili_subtitle',
-  'bili_transcribe',
-  'bili_transcribe_result',
-  'bili_transcribe_start',
-  'bili_unread_messages',
-  'bili_user_info',
-  'bili_user_videos',
-  'bili_video_info',
-  'bili_video_zones',
-  'bili_weekly_hot',
 ])
 
 // 供 bridge.js 控制台 / 测试脚本读取的「内置基线」视图（数组形式，仅读不改）。
@@ -345,6 +315,261 @@ const EXTERNAL_WHITELIST = loadExternalWhitelist()
 // apply() 的 guard 判定代码无需任何改动；导出供 bridge.js 读取当前生效视图。
 export const SAFE_PREFIXES = Object.freeze([...BASE_SAFE_PREFIXES, ...EXTERNAL_WHITELIST.prefixes])
 export const SAFE_EXACT = new Set([...BASE_SAFE_EXACT_SET, ...EXTERNAL_WHITELIST.exact])
+
+// ── 放行模式（2026-11-04）────────────────────────────────────────────────────
+//
+// 问题：每装一个插件都要人肉找工具名、再往白名单里加，否则调用被 guard 拒绝。
+// 这个成本随插件数线性增长（bili-scroll 一个包就 36 个名字），实操上不可持续。
+//
+// 三档模式，**判定顺序与语义**如下（`judge()` 是唯一实现，apply 与测试共用）：
+//
+//   allowlist（旧行为）：只放行 SAFE_EXACT / SAFE_PREFIXES，其余一律拒绝。
+//   auto（默认）：      allowlist ∪ 「已装载插件注册的工具名」。插件清单来自
+//                       <DSH_HOME>/profiles/<profile>/package.json 的 dsh.profile.bundles，
+//                       **排除 @deepseek-ai/ 开头的核心包**（read / write / pwsh / terminal /
+//                       session_* / subagent 全在核心包里，那是必须挡的那一面）。
+//                       再减去 KNOWN_DANGEROUS_GLOBAL_TOOLS 做双保险。
+//   open（全放行）：    不判定，除工具名为空外一律放行。等同于"把白名单丢掉"。
+//                       保留它是因为**是否信任本机装的东西由操作者决定**；
+//                       但默认值不是它，理由见下。
+//
+// 为什么 auto 可以作为默认值：装了插件 = 把它的代码放进本进程，插件本身已经拥有
+// 完整 Node 权限（能 fs、能 spawn），guard 挡不住它，也不该假装能挡。guard 真正能挡、
+// 且值得挡的是**模型能通过 QQ 群提示词注入去调用的宿主工具**——那些名字来自核心包与
+// 别处 composition 的全局层，不在插件里。所以「装了才有的插件工具自动放行」不降低
+// 这条边界，而「核心包工具与已知危险名始终拒绝」保住了它。
+//
+// 切换方式（优先级从高到低）：
+//   1. 环境变量 QQ_TOOL_RESTRICT_MODE=allowlist|auto|open
+//   2. <repo>/state/tool-restrict-mode.json  {"mode": "auto"}
+//   3. 默认 auto
+export const MODE_ALLOWLIST = 'allowlist'
+export const MODE_AUTO = 'auto'
+export const MODE_OPEN = 'open'
+const VALID_MODES = new Set([MODE_ALLOWLIST, MODE_AUTO, MODE_OPEN])
+
+const MODE_FILE = (() => {
+  if (process.env.QQ_TOOL_RESTRICT_MODE_FILE) return path.resolve(process.env.QQ_TOOL_RESTRICT_MODE_FILE)
+  try {
+    return fileURLToPath(new URL('../../state/tool-restrict-mode.json', import.meta.url))
+  } catch { return '' }
+})()
+
+/** 解析放行模式；非法值 fail-closed 回落到 allowlist，并留下可见的报错。 */
+export function resolveMode({ env = process.env, modeFile = MODE_FILE } = {}) {
+  const fromEnv = String(env.QQ_TOOL_RESTRICT_MODE ?? '').trim().toLowerCase()
+  if (fromEnv) {
+    if (VALID_MODES.has(fromEnv)) return fromEnv
+    console.error(`[qq-tool-restrict] QQ_TOOL_RESTRICT_MODE="${fromEnv}" 非法（可选 allowlist/auto/open），已按 allowlist 处理`)
+    return MODE_ALLOWLIST
+  }
+  if (modeFile) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(modeFile, 'utf8'))
+      const fromFile = String(parsed?.mode ?? '').trim().toLowerCase()
+      if (fromFile) {
+        if (VALID_MODES.has(fromFile)) return fromFile
+        console.error(`[qq-tool-restrict] ${modeFile} 里的 mode="${fromFile}" 非法，已按 allowlist 处理`)
+        return MODE_ALLOWLIST
+      }
+    } catch { /* 文件不存在或损坏 —— 用默认值，不阻断启动 */ }
+  }
+  return MODE_AUTO
+}
+
+export const RESTRICT_MODE = resolveMode()
+
+// ── auto 模式：从已装载插件里发现工具名 ──────────────────────────────────────
+//
+// 只扫「非核心 bundle」的包目录。判定依据是 profile/package.json 的 dsh.profile.bundles
+// ——那是 DSH 真正装载的清单，比"node_modules 里有什么"更准（依赖树里常有一堆没挂载的包）。
+//
+// 扫描刻意保守：只认三种注册形状（与 scripts/dsh-tool-names.mjs 同一套正则），
+// 有文件数 / 大小 / 深度上限，任何异常都吞掉并把该包记为"扫不到"——
+// 扫不到只是回到 allowlist 行为，不会误放行。
+const PLUGIN_TOOL_NAME_RE = /^[a-z][a-z0-9_-]{1,40}$/
+const SCAN_FILE_RE = /\.(js|mjs|cjs|ts)$|\.d\.ts$|\.patch\.ya?ml$/
+const SCAN_SKIP_DIRS = new Set(['node_modules', '.git', '.cache', 'test', 'tests', '__tests__'])
+
+function dshHomeDir() {
+  return process.env.DSH_HOME
+    || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, '.dsh')
+      : (process.env.HOME ? path.join(process.env.HOME, '.dsh') : ''))
+}
+
+function readJson(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return null }
+}
+
+/** 已装载的非核心 bundle 名 + 其包目录。核心包（@deepseek-ai/*）永不参与自动放行。 */
+export function listInstalledPluginBundles({ home = dshHomeDir(), profile = process.env.DSH_PROFILE || 'web' } = {}) {
+  if (!home) return []
+  const profileDir = path.join(home, 'profiles', profile)
+  const pkg = readJson(path.join(profileDir, 'package.json')) ?? {}
+  const declared = Array.isArray(pkg?.dsh?.profile?.bundles) ? pkg.dsh.profile.bundles : []
+  const deps = Object.keys(pkg?.dependencies ?? {})
+  // bundles 是权威清单；dependencies 兜底，防止某些 profile 只用 dependencies 声明。
+  const names = [...new Set([...declared, ...deps].map(String))]
+    .filter((n) => n && !n.startsWith('@deepseek-ai/'))
+  const out = []
+  for (const name of names) {
+    const dir = path.join(profileDir, 'node_modules', ...name.split('/'))
+    if (!fs.existsSync(dir)) continue
+    const meta = readJson(path.join(dir, 'package.json')) ?? {}
+    out.push({ name: meta.name || name, dir })
+  }
+  // 用户插件目录（link: 安装的会重复出现，用 realpath 去重）
+  const pluginsDir = path.join(home, 'plugins')
+  let entries = []
+  try { entries = fs.readdirSync(pluginsDir, { withFileTypes: true }) } catch { /* 没有就算了 */ }
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name.startsWith('.')) continue
+    const dir = path.join(pluginsDir, e.name)
+    const meta = readJson(path.join(dir, 'package.json')) ?? {}
+    out.push({ name: meta.name || e.name, dir })
+  }
+  const seen = new Set()
+  return out.filter((p) => {
+    const key = (() => { try { return fs.realpathSync(p.dir) } catch { return p.dir } })()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+/** 从单个包目录里抽工具名（有界；失败返回空集）。 */
+export function scanPackageToolNames(dir, { maxFiles = 4000, maxFileBytes = 512 * 1024, maxDepth = 5 } = {}) {
+  const found = new Set()
+  const add = (name) => { if (PLUGIN_TOOL_NAME_RE.test(name)) found.add(name) }
+  let visited = 0
+  const walk = (cur, depth) => {
+    if (depth > maxDepth || visited >= maxFiles) return
+    let entries = []
+    try { entries = fs.readdirSync(cur, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (visited >= maxFiles) return
+      if (e.name.startsWith('.') || SCAN_SKIP_DIRS.has(e.name)) continue
+      const full = path.join(cur, e.name)
+      if (e.isDirectory()) { walk(full, depth + 1); continue }
+      if (!SCAN_FILE_RE.test(e.name)) continue
+      visited += 1
+      let text = ''
+      try {
+        const st = fs.statSync(full)
+        if (st.size > maxFileBytes) continue
+        text = fs.readFileSync(full, 'utf8')
+      } catch { continue }
+      for (const m of text.matchAll(/\.register\(\s*defineTool\(\{[\s\S]{0,400}?\bname:\s*["']([^"']+)["']/g)) add(m[1])
+      for (const m of text.matchAll(/\btoolName:\s*["']([^"']+)["']/g)) add(m[1])
+      for (const m of text.matchAll(/\btoolName:\s*[^;\n]*?\.default\(\s*["']([^"']+)["']/g)) add(m[1])
+      for (const m of text.matchAll(/defineTool\(\{[\s\S]{0,200}?\bname:\s*["']([^"']+)["']/g)) add(m[1])
+    }
+  }
+  walk(path.resolve(dir), 0)
+  return found
+}
+
+/**
+ * 读插件声明的 pack 清单（覆盖 Python/MCP 侧工具：那些名字在 JS 里扫不到）。
+ *
+ * 2026-11-04 起仓库不再附带 plugin-tool-packs.json（可选插件的工具名已整体剔除），
+ * 所以默认返回空对象、pack 分支不生效 —— auto 模式只依赖扫包结果。机制本身保留：
+ * 将来某个 MCP 型插件的工具名既扫不到、又确实需要放行时，重新放一份清单即可启用。
+ */
+function loadPluginPacks() {
+  try {
+    const file = fileURLToPath(new URL('./plugin-tool-packs.json', import.meta.url))
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const packs = parsed?.packs
+    return packs && typeof packs === 'object' ? packs : {}
+  } catch { return {} }
+}
+
+let autoCache = null
+
+/**
+ * auto 模式额外放行集合 = 已装载插件包里扫到的工具名 ∪ 这些包对应 pack 的声明条目。
+ * 结果缓存（模块生命周期内只算一次：DSH 启动时算一次即可，改插件要重启）。
+ *
+ * pack 可以声明两种东西：
+ *   · exact[]    —— 精确工具名（JS 侧注册的名字，以及扫不到的 Python/MCP 工具名）
+ *   · prefixes[] —— 命名空间前缀（`mcp__xxx__` 形式）。给**MCP 型插件**用：
+ *                   MCP server 的工具名是 `mcp__<serverName>__<tool>`，由 DSH 的
+ *                   mcp-client 动态注册，插件源码里没有 `name: '...'` 字面量，
+ *                   扫盘永远扫不到 —— 只能靠前缀声明。
+ *                   ⚠️ 前缀是 fail-open 的（该命名空间以后新增的工具一并放行），
+ *                   所以只在 packs 里逐个插件显式声明，绝不写成全局 `mcp__` 通配。
+ */
+export function getAutoAllowed() {
+  if (autoCache) return autoCache
+  const allowed = new Set()
+  const prefixes = new Set()
+  const sources = []
+  const denied = new Set(KNOWN_DANGEROUS_GLOBAL_TOOLS)
+  const bundles = listInstalledPluginBundles()
+  const packs = loadPluginPacks()
+  const packByPackage = new Map()
+  for (const [packName, pack] of Object.entries(packs)) {
+    if (pack?.package) packByPackage.set(String(pack.package), { packName, pack })
+  }
+  for (const bundle of bundles) {
+    let count = 0
+    for (const name of scanPackageToolNames(bundle.dir)) {
+      if (denied.has(name)) continue
+      allowed.add(name); count += 1
+    }
+    const hit = packByPackage.get(bundle.name)
+    if (hit) {
+      for (const entry of Array.isArray(hit.pack.exact) ? hit.pack.exact : []) {
+        const value = String(entry).trim()
+        if (!value || denied.has(value) || !PLUGIN_TOOL_NAME_RE.test(value)) continue
+        if (!allowed.has(value)) count += 1
+        allowed.add(value)
+      }
+      for (const prefix of Array.isArray(hit.pack.prefixes) ? hit.pack.prefixes : []) {
+        const value = String(prefix).trim()
+        // 前缀必须形如 `mcp__ns__`：裸 `mcp__` 会让所有 MCP 命名空间一次性放行，
+        // 等于把"高权限命名空间默认关闭"这条规则作废（RULES.md 第 2 条）。
+        if (!/^[A-Za-z0-9_]+__[A-Za-z0-9_]*__$/.test(value) && !/^[A-Za-z0-9_]+__$/.test(value)) continue
+        if (value === 'mcp__') continue
+        if (!prefixes.has(value)) count += 1
+        prefixes.add(value)
+      }
+    }
+    sources.push(`${bundle.name}(${count})`)
+  }
+  autoCache = { allowed, prefixes, sources }
+  return autoCache
+}
+
+/**
+ * 唯一的放行判定。返回 undefined = 放行，返回字符串 = 拒绝原因。
+ *
+ * @param {string} name 工具名
+ * @param {object} opts 测试可注入 mode / exact / prefixes / autoAllowed / autoPrefixes
+ */
+export function judge(name, {
+  mode = RESTRICT_MODE,
+  exact = SAFE_EXACT,
+  prefixes = SAFE_PREFIXES,
+  autoAllowed = null,
+  autoPrefixes = null
+} = {}) {
+  if (typeof name !== 'string' || name.length === 0) return '工具名无效，已拒绝'
+  if (mode === MODE_OPEN) return undefined
+  if (exact.has(name)) return undefined
+  if (prefixes.some((prefix) => name.startsWith(prefix))) return undefined
+  if (mode === MODE_AUTO) {
+    const auto = autoAllowed === null || autoPrefixes === null ? getAutoAllowed() : null
+    const names = autoAllowed ?? auto.allowed
+    const ns = autoPrefixes ?? auto.prefixes
+    // 已知危险名即便被插件扫到也不放行（双保险：restrict 名单 + 这里）
+    if (names.has(name) && !KNOWN_DANGEROUS_GLOBAL_TOOLS.includes(name)) return undefined
+    if (ns.size && [...ns].some((prefix) => name.startsWith(prefix))) return undefined
+  }
+  return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（仅允许 QQ MCP 工具与无害模型侧工具）`
+}
+
 
 // ── 诊断落盘：restrict 失败时到底为什么 ────────────────────────────────────
 //
@@ -438,12 +663,23 @@ export function apply(ctx) {
     timer?.unref?.()
   }
 
-  // 2) 执行期白名单：任何不在允许范围内的工具调用都会被拒绝。
-  ctx.tools.guard((exec) => {
-    const name = exec?.name
-    if (typeof name !== 'string' || name.length === 0) return '工具名无效，已拒绝'
-    if (SAFE_EXACT.has(name)) return
-    if (SAFE_PREFIXES.some((prefix) => name.startsWith(prefix))) return
-    return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（仅允许 QQ MCP 工具与无害模型侧工具）`
-  })
+  // 2) 执行期判定：统一走 judge()（放行模式见文件上方「放行模式」段）。
+  //
+  // 模式必须**每次启动都打一行**：判定放宽是安全相关的状态变更，不能让它在
+  // stderr 里静默发生（旧实现里 restrict 失败被 try/catch 吞掉，就是靠
+  // "为什么没生效"完全不可观测才拖了一周）。
+  // 注意：模式行只走 stderr，**不写诊断文件** —— state/tool-restrict.log 是
+  // "restrict 出问题了"的信号通道，正常启动往里写会让"日志非空"失去告警意义
+  // （test-tool-restrict-guard.mjs 有断言守着这一点）。
+  if (RESTRICT_MODE === MODE_OPEN) {
+    console.error('[qq-tool-restrict] ⚠️  放行模式=open：执行期白名单已整体关闭，任何工具都会被放行（仅保留 tools.restrict 的隐藏名单）')
+  } else if (RESTRICT_MODE === MODE_AUTO) {
+    const { allowed, sources } = getAutoAllowed()
+    console.error(`[qq-tool-restrict] 放行模式=auto：基线 ${SAFE_EXACT.size} 条 + 已装载插件自动放行 ${allowed.size} 条`
+      + `${sources.length ? `（${sources.join(', ')}）` : '（未发现已装载插件）'}`)
+  } else {
+    console.error(`[qq-tool-restrict] 放行模式=allowlist：仅放行基线 ${SAFE_EXACT.size} 条`)
+  }
+
+  ctx.tools.guard((exec) => judge(exec?.name))
 }

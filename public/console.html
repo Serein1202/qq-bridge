@@ -2494,6 +2494,7 @@ button:active:not(:disabled) {
       <div id="toolWlBulkMsg" class="meta" style="margin-top:8px"></div>
       <div id="toolWlMsg" class="meta" style="margin-top:8px"></div>
       <div style="margin-top:14px;font-size:13px;color:var(--muted)">内置基线 <span id="toolWlBaseCount">—</span> 条 · 外部追加 <span id="toolWlExtraCount">—</span> 条 · 当前生效共 <span id="toolWlTotalCount">—</span> 条（含前缀类）</div>
+      <div id="toolWlModeLine" style="margin-top:6px;font-size:13px;color:var(--muted)">放行模式：—</div>
       <div id="toolWlList" class="tool-wl-list"></div>
       <div class="row" style="margin-top:14px">
         <button id="toolWlSave" class="primary">保存并重启 DSH 网关</button>
@@ -4507,7 +4508,7 @@ const consolePages = {
 };
 
 // ── 工具白名单（qq-tool-restrict）管理 ──────────────────────────────────────
-const toolWlState = { base: { exact: [], prefixes: [] }, external: { exact: [], prefixes: [] }, exact: [], prefixes: [] };
+const toolWlState = { mode: 'allowlist', auto: { count: 0, sources: [] }, base: { exact: [], prefixes: [] }, external: { exact: [], prefixes: [] }, exact: [], prefixes: [] };
 let toolWlDirty = false;
 
 async function toolWlLoad() {
@@ -4522,6 +4523,8 @@ async function toolWlLoad() {
   toolWlState.external = data.external || { exact: [], prefixes: [] };
   toolWlState.exact = data.exact || [];
   toolWlState.prefixes = data.prefixes || [];
+  toolWlState.mode = data.mode || 'allowlist';
+  toolWlState.auto = data.auto || { count: 0, sources: [] };
   toolWlDirty = false;
   msg.textContent = '';
   toolWlRender();
@@ -4533,6 +4536,19 @@ function toolWlRender() {
   document.getElementById('toolWlBaseCount').textContent = toolWlState.base.exact.length;
   document.getElementById('toolWlExtraCount').textContent = toolWlState.external.exact.length + toolWlState.external.prefixes.length;
   document.getElementById('toolWlTotalCount').textContent = toolWlState.exact.length + toolWlState.prefixes.length;
+  // 放行模式：auto 会额外放行一大堆插件工具（列表里没有它们的名字，因为不在白名单里），
+  // 必须显式写出来，否则"当前生效共 N 条"会让人误以为只有这 N 个可用。
+  const modeLine = document.getElementById('toolWlModeLine');
+  const mode = toolWlState.mode || 'allowlist';
+  const autoCount = Number(toolWlState.auto?.count || 0);
+  const prefixCount = Number(toolWlState.auto?.prefixCount || 0);
+  const modeText = mode === 'open'
+    ? 'open —— 白名单已整体关闭，任何工具都放行（仅 tools.restrict 仍隐藏已知危险工具）'
+    : mode === 'auto'
+      ? `auto —— 基线与追加之外，自动放行已装载插件注册的 ${autoCount} 个工具${prefixCount ? `（含 ${prefixCount} 个命名空间前缀）` : ''}：${esc((toolWlState.auto?.sources || []).join('、') || '未发现插件')}`
+      : 'allowlist —— 只放行下列条目的工具，其余一律拒绝';
+  modeLine.innerHTML = `放行模式：${modeText}`;
+  modeLine.style.color = mode === 'open' ? 'var(--err, #d33)' : 'var(--muted)';
   const rows = [];
   const isExternal = (v, kind) => (kind === 'prefix' ? toolWlState.external.prefixes.includes(v) : toolWlState.external.exact.includes(v));
   for (const name of toolWlState.exact) {

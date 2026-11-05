@@ -303,3 +303,80 @@ test('封闭 agent 的预设在创建后必须与仿真 preset 明确区分', ()
     }
   }
 });
+
+test('内置基线只放默认安装就有的工具，不含可选插件专属条目', async () => {
+  // 为什么必须测：`compress` 与 36 个 `bili_*` 曾经写在内置基线里。新用户没装
+  // billion-context / dsh-bili-scroll，这些名字永远命中不到任何工具，却把
+  // "默认拥有 B 站 / 上下文压缩能力"写进了权限面，掩盖了真实的默认放行范围。
+  //
+  // 2026-11-04：插件专属的 pack 清单（plugin-tool-packs.json）与批量写入脚本
+  // （scripts/whitelist-add.mjs）已整体移除 —— 仓库不再随分发附带可选插件的工具名。
+  // 这条断言因此不再读 pack 文件，只保留一个职责：**防止有人图省事再把这类名字塞回基线**。
+  // 插件工具现在一律靠 auto 模式扫包，或由使用者在控制台上显式追加。
+  const FORBIDDEN_IN_BASE = [
+    /^bili_/,                     // dsh-bili-scroll
+    /^dy_/, /^douyin_/,           // dsh-douyin-browser-local
+    /^memory_/,                   // @modusensus/dsh-mneme
+    /^meme_/, /^send_meme$/, /^learn_meme$/,   // dsh-meme
+    /^generate_image$/, /^edit_image$/, /^compress$/, /_image_/,  // imagegen / billion-context
+  ];
+  for (const id of SIMULATION_PRESETS) {
+    const { dir } = readPreset(id);
+    const mod = await import(pathToFileURL(path.join(dir, 'qq-tool-restrict.mjs')).href);
+    const base = new Set(mod.BASE_SAFE_EXACT ?? []);
+    const leaked = [...base].filter((n) => FORBIDDEN_IN_BASE.some((re) => re.test(n)));
+    assert.deepEqual(leaked, [],
+      `${id}: 以下插件专属工具混进了内置基线，应改由使用者在控制台显式追加：${leaked.join(', ')}`);
+    // 基线自身也只该是"默认安装就有的东西"：给一个上限，防止有人继续往里堆。
+    assert.ok(base.size <= 4,
+      `${id}: 内置基线精确名应保持极小（当前 ${base.size} 条：${[...base].join(', ')}），`
+      + '插件/按需能力一律走外部追加白名单');
+  }
+});
+
+test('放行模式：open 全放行、allowlist 严格、auto 只多放插件工具且已知危险仍拒绝', async () => {
+  const { dir } = readPreset('qq-chat-v2');
+  const mod = await import(pathToFileURL(path.join(dir, 'qq-tool-restrict.mjs')).href);
+
+  // 模式解析：非法值必须 fail-closed 回落到 allowlist（环境变量写错不能变成全放行）。
+  assert.equal(mod.resolveMode({ env: {}, modeFile: '' }), 'auto', '无配置时默认 auto');
+  assert.equal(mod.resolveMode({ env: { QQ_TOOL_RESTRICT_MODE: 'open' }, modeFile: '' }), 'open');
+  assert.equal(mod.resolveMode({ env: { QQ_TOOL_RESTRICT_MODE: 'OPEN' }, modeFile: '' }), 'open', '大小写不敏感');
+  assert.equal(mod.resolveMode({ env: { QQ_TOOL_RESTRICT_MODE: 'opne' }, modeFile: '' }), 'allowlist', '拼错必须是 allowlist 而不是 open');
+
+  // open：任何工具名都放行，只有空名拒绝。
+  assert.equal(mod.judge('totally_unknown_tool', { mode: 'open' }), undefined);
+  assert.equal(mod.judge('plugin_from_nowhere', { mode: 'open' }), undefined);
+  assert.match(String(mod.judge('', { mode: 'open' })), /工具名无效/);
+
+  // allowlist：插件工具不放行（这正是旧行为的痛点，保留该模式是为了可回退）。
+  // 用**合成名字**而不是真实插件名：真实名字可能已经被本机 state/whitelist-extra.json
+  // 追加放行（这台机器就加了 bili_*），拿它做断言会随环境漂移、变成偶然通过。
+  assert.match(String(mod.judge('future_plugin_tool', { mode: 'allowlist', autoAllowed: new Set() })), /不在 QQ 桥接白名单内/);
+
+  // auto：只多放 autoAllowed 里的名字，且**已知危险名即使被插件扫到也不放行**。
+  const autoAllowed = new Set(['future_plugin_tool', 'future_compress_tool', 'terminal_open']);
+  assert.equal(mod.judge('future_plugin_tool', { mode: 'auto', autoAllowed }), undefined);
+  assert.equal(mod.judge('future_compress_tool', { mode: 'auto', autoAllowed }), undefined);
+  assert.match(String(mod.judge('terminal_open', { mode: 'auto', autoAllowed })), /不在 QQ 桥接白名单内/,
+    'terminal_open 属于已知危险名，auto 模式也不能放行（双保险）');
+  assert.match(String(mod.judge('read', { mode: 'auto', autoAllowed })), /不在 QQ 桥接白名单内/);
+
+  // MCP 型插件的工具名扫盘扫不到（mcp-client 动态注册），只能按命名空间前缀声明。
+  const autoPrefixes = new Set(['mcp__someplugin__']);
+  assert.equal(mod.judge('mcp__someplugin__do_thing', { mode: 'auto', autoAllowed: new Set(), autoPrefixes }), undefined);
+  assert.match(String(mod.judge('mcp__other__x', { mode: 'auto', autoAllowed: new Set(), autoPrefixes })),
+    /不在 QQ 桥接白名单内/, '前缀只能匹配自己那个命名空间，不能顺带放行别的');
+});
+
+test('auto 自动放行只来自非核心 bundle（核心包的工具必须始终被挡）', async () => {
+  const { dir } = readPreset('qq-chat-v2');
+  const mod = await import(pathToFileURL(path.join(dir, 'qq-tool-restrict.mjs')).href);
+  const bundles = mod.listInstalledPluginBundles();
+  const leaked = bundles.filter((b) => b.name.startsWith('@deepseek-ai/'));
+  assert.deepEqual(leaked, [], `核心 bundle 不得参与自动放行：${leaked.map((b) => b.name).join(', ')}`);
+  // 扫到的名字必须都是合法工具名形态（防止正则误抽把垃圾塞进放行集合）。
+  const { allowed } = mod.getAutoAllowed();
+  const bad = [...allowed].filter((n) => !/^[a-z][a-z0-9_-]{1,40}$/.test(n));
+  assert.deepEqual(bad, [], `自动放行里混入了非法名字：${bad.join(', ')}`);
+});

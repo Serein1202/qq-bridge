@@ -61,7 +61,7 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接进程 ──�
 
 - **QQ 侧**：`@snowluma/sdk` 的 `SnowLumaWebSocketClient`（OneBot v11 WebSocket 客户端，自动重连）
 - **DSH 侧**：适配 DSH 0.1.2 起引入、**0.2.1-rc.2 上逐项复核**的协议——用本机持久化签名密钥铸造会话 Cookie 鉴权、`/api/<namespace>/<method>` 斜杠 RPC、`/api/remote.mux` + `session/follow` 事件流（`session/control` 的队列读 `value.projections[<id>].values.inbox`，另有一元 `session/projections` 主路径）；复用 `AbstractApiClient` 传输层但不再依赖旧版 zod value schema。会话模型由桥接按 `config.json` 的 `dsh.model` 逐会话 `session.selectModel` 固定（默认 `deepseek-flash` = DeepSeek-V41-Flash，多模态）
-- **agent 自主收发 QQ**：DSH 的 MCP 客户端（`~/.dsh/profiles/web/cordis.patch.yml` 配置）接入 MCP server（下列三个由 `setup-dsh.mjs` **无条件挂载**；另有三个高权限 server 默认不挂载，见本节末尾）：
+- **agent 自主收发 QQ**：DSH 的 MCP 客户端（`~/.dsh/profiles/web/cordis.patch.yml` 配置）接入 MCP server（下列三个由 `setup-dsh.mjs` **无条件收录**；另有三个高权限 server 注册上默认尝试挂载、白名单上默认拒绝，见本节末尾）：
   - `snowluma`（桥接自带 `src/mcp-snowluma-safe.js`）：QQ 动作**安全子集**（查状态/查群/查消息/发消息，发送强制白名单；发送工具支持可选 `replyToMessageId` 引用回复）
   - `snowluma-host`（桥接自带 `src/mcp-host-server.js`）：**只有** `snowluma_status`（只读探活 `get_login_info`）。
     ⚠️ **v0.1.5 起移除了 `start_snowluma` / `stop_snowluma`**（以及 `snowluma.allowProcessControl` 配置项）——
@@ -73,16 +73,17 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接进程 ──�
     因而结果质量与 DSH 内的搜索一致、且**不再默认把群聊关键词发给 Bing**（Bing RSS 只在 DeepSeek 不可用时兜底）。
     抓取仍由桥接自己做 SSRF 校验并限制正文大小；**黑话学习默认开启**，会把群聊里提取的词条交给所选的搜索后端。
     数据出机清单见 [NOTICE.md](NOTICE.md) 的「数据出机清单」，不需要就关掉黑话自动研究（`slang.autoResearch`）或把 `webSearch.provider` 设为 `bing`。
-  - ⚠️ **三个高权限 MCP 默认挂载 + 默认放行**（2026-11-02 起）：`phone`（adb 控手机）/ `companion`（私人日记与记忆）/ `qzone`（以本人身份发说说评论）。
-    `setup-dsh.mjs` 默认写满六个条目，白名单前缀也已并入 `qq-tool-restrict.mjs` 的 `BASE_SAFE_PREFIXES` ——
-    这些工具会**出现在模型的工具 schema 里**（每回合付 token），且 QQ 群会话受群友提示词注入驱动，请确认会话不会被不可信人群触达。
-    如需只开部分子集：
+  - ⚠️ **三个高权限 MCP：注册层默认挂载，白名单层默认拒绝**（两层必须分开看）：
+    `phone`（adb 控手机）/ `companion`（私人日记与记忆）/ `qzone`（以本人身份发说说评论）。
+    - **注册层**：`setup-dsh.mjs` 默认尝试写入全部六条（`PRIVILEGED_MCP_DEFAULT_ALL = true`）。**但脚本不存在时自动跳过并逐条打印原因**——本仓库不附带 `packages/phone-mcp/`、`packages/qzone-mcp/`、`src/mcp-companion.js`，所以全新克隆实际只挂上 3 个核心 MCP。要启用高权限能力，先把对应 server 脚本放到位再重跑 setup。
+    - **白名单层**：`mcp__phone__` / `mcp__companion__` / `mcp__qzone__` **不在** `BASE_SAFE_PREFIXES`，默认不放行。工具即使已经出现在模型的工具 schema 里，调用也会在执行期被 `qq-tool-restrict.mjs` 的 guard 拒绝。**真正构成提权的是放宽这一层**，挂载本身不算。
+    - 挂载的代价是 token 与误导：工具名进 schema 后每回合付费，还诱导模型反复尝试调用再被拒。只想验证链路、暂不给工具时，用 `--enable` 缩小挂载范围：
 
     ```bash
-    node scripts/setup-dsh.mjs web --enable=phone   # 等价：QQ_BRIDGE_ENABLE_MCP=phone；不传则默认全开
+    node scripts/setup-dsh.mjs web --enable=phone   # 只挂 phone；不传则三个都尝试挂
     ```
 
-    收紧方式：`setup-dsh.mjs` 的 `PRIVILEGED_MCP_DEFAULT_ALL=false` 可恢复默认不挂载；删除 `BASE_SAFE_PREFIXES` 中高权限展开项可收紧白名单。详见 [RULES.md](RULES.md) 第 2 条与 [docs/guides/KIT_INTEGRATION.md](docs/guides/KIT_INTEGRATION.md)。
+    收紧方式：`setup-dsh.mjs` 的 `PRIVILEGED_MCP_DEFAULT_ALL=false` 可恢复默认不挂载；把前缀加进 `state/whitelist-extra.json`（或环境变量 `QQ_TOOL_RESTRICT_EXTRA`）才是放行，反之删掉即收紧。详见 [RULES.md](RULES.md) 第 2 条。
 - **会话模型**：每个 QQ 会话（私聊/群）对应一个独立的 DSH 会话，统一归组到「QQ 聊天」工作区（不再散落未分组）；映射持久化在 `state/sessions.json`
 - **性格定制**：QQ 会话默认使用 `qq-chat` agent preset，`reserved2` 使用 `qq-chat-v2`。DSH 0.1.7 起 preset 不再是 `~/.dsh/.agent-presets/<名>/` 目录，而是 `plugins/qq-agent-presets/` bundle 生成并插入 profile 的一条 `@deepseek-ai/dsh-agent-preset` 行（重启 DSH 后生效）；人格与默认 DSH 一致（coding agent），仅附加 QQ 场景规则；**角色扮演**是可选机制——由控制台或管理端设置 `state/current-role.json` 注入（群友无法更改）
 - **本地控制台**：桥接自带 Web 控制台 `http://127.0.0.1:3100`——左侧按操作任务分为「运行总览 / 会话与审批 / 人格与角色 / 二代仿真 / 一代仿真 / 黑话词库 / 令牌与花费 / 访问与安全 / 调试与运维 / 工具参考」十个页面，右上角搜索框可跨页定位任意功能项；支持**浅色 / 深色双主题**（顶栏一键切换，未选择时跟随系统）；切换运行模式（chat / closed-agent / reserved / reserved2）、设置角色、静默开关、查看活动日志、修改管理员/控制台令牌，全部即时生效；访问需要令牌（`config.json` 的 `consoleToken`，未配置时自动生成并打印在启动日志；控制台内可手动修改或重新生成）
@@ -273,11 +274,10 @@ qq-bridge/
   docs/
     README.md           # 文档索引（每篇一句话 + 是否仍然有效）
     FOLDER_MAP.md       # 目录结构与 scripts/ 命名约定
-    guides/             # 面向使用者/运维：PROJECT_GUIDE / DSH_SETUP / VOICE / TOKEN_USAGE_CONSOLE / CONSOLE-UI-TESTING
-    design/             # 设计与规划：GEN2_SIMULATION_PLAN / SOCIAL_MODE_PLAN / DSH_QQ_TOOLS_PLAN / 真人语感策略
-    research/           # 调研：SnowLuma功能调研 / QQ消息免打扰 / 表情包能力 / 本地模型选型
-    audits/             # 审查与优化报告（体检、控制台、token）
-    legacy/             # 历史归档（已被取代或问题已全部修复的旧报告）
+    guides/             # 安装 DSH_SETUP / 控制台 TOKEN_USAGE_CONSOLE + CONSOLE-UI-TESTING /
+                        # 安全 SECURITY_BASELINE + PRIVACY / 适配 DSH_020 + DSH_021 / 带日期的体检记录
+                        # PROJECT_GUIDE、VOICE 以及 design/ research/ audits/ legacy/ 属本地未入库
+                        # 资料（被 .gitignore 排除），公开仓库不含，见 docs/README.md「本地未入库资料」
   audio/                # 语音库：把准备好的音频放这里，可作 QQ 语音发出（用法见 docs/README.md 文档索引）
   dsh/agent-presets/    # qq-chat / qq-chat-v2 的 DSH agent preset 模板
   plugins/qq-mode-console  # DSH 插件：注册 qq-mode 设置命名空间（仅 host 半，UI 卡片未实现）

@@ -60,7 +60,7 @@ import {
   applyStickerNote,
   markStickerUsed
 } from './sticker-lib.js';
-import { BASE_SAFE_EXACT, BASE_SAFE_PREFIXES } from '../plugins/qq-agent-presets/qq-tool-restrict.mjs';
+import { BASE_SAFE_EXACT, BASE_SAFE_PREFIXES, RESTRICT_MODE, getAutoAllowed } from '../plugins/qq-agent-presets/qq-tool-restrict.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -295,11 +295,27 @@ function readToolWhitelistExtra() {
 
 // 当前生效视图：内置基线 + 外部追加（qq-tool-restrict.mjs 的 SAFE_EXACT/SAFE_PREFIXES
 // 由同一份 JSON 合并而来，启动时同源；此处仅为控制台展示与校验用）。
+//
+// mode 是执行期真正在用的放行模式（allowlist / auto / open）：
+//   · auto 下还有一坨「已装载插件自动放行」的名字，控制台必须能看到它们，
+//     否则操作者会以为白名单只有基线条目，实际插件工具已经全开（不可观测 = 不可管理）。
+//   · open 下 getAutoAllowed() 不必算（没意义），省一次扫盘。
 function toolWhitelistView() {
   const extra = readToolWhitelistExtra();
+  let auto = { count: 0, sources: [] };
+  if (RESTRICT_MODE === 'auto') {
+    try {
+      const { allowed, prefixes, sources } = getAutoAllowed();
+      auto = { count: allowed.size + prefixes.size, exactCount: allowed.size, prefixCount: prefixes.size, sources };
+    } catch (error) {
+      auto = { count: 0, sources: [], error: String(error?.message ?? error) };
+    }
+  }
   return {
+    mode: RESTRICT_MODE,
     base: { exact: [...BASE_SAFE_EXACT], prefixes: [...BASE_SAFE_PREFIXES] },
     external: extra,
+    auto,
     exact: [...new Set([...BASE_SAFE_EXACT, ...extra.exact])],
     prefixes: [...new Set([...BASE_SAFE_PREFIXES, ...extra.prefixes])],
   };
@@ -1400,6 +1416,32 @@ function consolePortInUse() {
   }
 }
 
+/**
+ * 该 PID 是否是一个 node 进程。
+ *
+ * 只服务于「锁文件里的 PID 还活着，但控制台端口没被占用」这个**歧义分支**：
+ * 必须区分两种情况 ——
+ *   ① 锁里的 PID 已被系统回收给别的程序（锁确实过期，可以删）；
+ *   ② 桥接刚写完锁、还没 listen 控制台端口（锁是活的，删了就等于放双实例）。
+ *
+ * 探测失败一律返回 true：宁可让用户手动删一次锁，也不要放进第二个实例。
+ */
+function pidLooksLikeNode(pid) {
+  try {
+    if (process.platform === 'win32') {
+      const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'],
+        { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+      // 没有匹配项时输出的是「信息: 没有运行的任务匹配指定标准」，不含 .exe
+      return /node\.exe/i.test(out);
+    }
+    const out = execFileSync('ps', ['-p', String(pid), '-o', 'comm='],
+      { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+    return /node/i.test(out);
+  } catch {
+    return true;
+  }
+}
+
 function acquireLock() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   // 原子创建锁文件：把 PID 一次性写入（flag 'wx'），避免“先建空文件再写 PID”的窗口被第二个进程当作过期锁偷走。
@@ -1427,8 +1469,27 @@ function acquireLock() {
         try {
           process.kill(pid, 0);
           // 没抛异常只说明「存在某个持有该 PID 的进程」，不能证明那就是桥接
-          // （PID 被回收给别的程序时会误判），所以再加一道端口探测。
-          if (!consolePortInUse()) stale = true;
+          // （PID 被回收给别的程序时会误判）。
+          //
+          // 但也不能反过来「端口没被占用就判过期」—— 那是删错锁，代价是**放双实例进来**：
+          // 双实例会互抢 QQ 消息、互相覆盖 social-v2.json，比误判「已有实例在运行」危险得多
+          // （后者只是让用户手动删一次锁）。
+          //
+          // 实测事故（2026-11-04 17:40）：新实例刚写完锁、还没 listen 3100 时，
+          // 守护窗口拉起的旧实例探测端口 → 空闲 → unlink 掉新实例的锁 → 自己写完锁
+          // 又撞 EADDRINUSE 退出 → 它的 exit handler 把锁一起删掉。
+          // 结果真正在跑的那个实例从此没有锁，之后拖死多少次都不会再被拦住。
+          if (consolePortInUse()) {
+            console.error(`[bridge] 已有实例在运行（PID ${pid}，控制台端口已被占用）。若确认其已死，删除 ${LOCK_FILE} 后重试。`);
+            process.exit(2);
+          }
+          if (pidLooksLikeNode(pid)) {
+            console.error(`[bridge] 锁文件 PID ${pid} 是一个 node 进程，但尚未监听控制台端口（可能正在启动）。`);
+            console.error(`[bridge] 为避免放入第二个实例，本进程退出。若确认该 PID 不是桥接，删除 ${LOCK_FILE} 后重试。`);
+            process.exit(2);
+          }
+          // 到这里已能确认：PID 活着 + 端口空闲 + 不是 node ⇒ 锁里的 PID 已被回收给别的程序。
+          stale = true;
         } catch (error) {
           if (error.code === 'ESRCH') {
             stale = true;
@@ -1437,12 +1498,17 @@ function acquireLock() {
             // 这**不能**证明桥接还在跑，但旧逻辑把它当成「已有实例」直接 exit(2)：
             // 一旦锁文件里的 PID 被系统回收给一个受保护进程，桥接就永久起不来，
             // 而且提示信息把人引向「已有实例在运行」这个错误方向。
-            // 这里改成按「疑似过期」处理，但要先确认控制台端口没有被占用。
+            // 这里改成按「疑似过期」处理，但同样要先排除「端口被占」与「node 还在启动」。
             if (consolePortInUse()) {
               console.error(`[bridge] 控制台端口已被占用，判定已有实例在运行（锁文件 PID ${pid} 无权限探测）。`);
               process.exit(2);
             }
-            console.error(`[bridge] 锁文件 PID ${pid} 无权限探测（EPERM）且控制台端口空闲，按过期锁处理。`);
+            if (pidLooksLikeNode(pid)) {
+              console.error(`[bridge] 锁文件 PID ${pid} 无权限探测（EPERM）但是一个 node 进程，按「可能正在启动」处理，不删锁。`);
+              console.error(`[bridge] 若确认该 PID 不是桥接，删除 ${LOCK_FILE} 后重试。`);
+              process.exit(2);
+            }
+            console.error(`[bridge] 锁文件 PID ${pid} 无权限探测（EPERM）、控制台端口空闲且不是 node 进程，按过期锁处理。`);
             stale = true;
           } else {
             console.error(`[bridge] 已有实例在运行（PID ${pid}，锁文件 ${LOCK_FILE}）。若确认其已死，删除该文件后重试。`);

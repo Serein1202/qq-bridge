@@ -28,6 +28,28 @@ const trackedOnly = args.includes('--tracked-only');
 const withHistory = args.includes('--history');
 const asJson = args.includes('--json');
 
+// AIGC 内容标识元数据行 —— 不是凭据。
+//
+// 《生成式人工智能服务管理暂行办法》与 GB 45438 要求 AI 生成内容携带标识，
+// 其中「隐式标识」写在文档 YAML front matter 里，形如：
+//
+//     AIGC:
+//         Label: "1"
+//         ContentProducer: 001191440300708461136T1XGW3
+//         ProduceID: c24c66f5...
+//         ReservedCode1: Hx2gu5Ewk5j7bQ...（base64 打包的水印+签名）
+//
+// `ReservedCode*` 的值是 base64 载荷，天然是「混合大小写+数字」的长串，
+// 必被「疑似令牌/密钥（高熵串）」规则命中。但删掉它文档就不再合规 ——
+// 这是必须存在的数据，不是泄漏。
+//
+// 判定放在**行**粒度而不是文件粒度：RULES.md 这类安全文档整份豁免的话，
+// 它以后新增的真实凭据就再也扫不出来了（allowPaths 的已知代价）。
+//
+// 定义必须早于扫描循环：循环在模块顶层执行，晚于它就会触发 TDZ。
+const AIGC_META_LINE = /^\s*(?:ReservedCode\d*|ProduceID|PropagateID|ContentProducer|ContentPropagator)\s*:\s*\S/;
+const isAigcMetaLine = (line) => AIGC_META_LINE.test(line);
+
 // 默认规则：即使没有 privacy-rules.json 也能挡住最常见的一类泄漏。
 const DEFAULT_RULES = {
   comment: '默认规则。请把 privacy-rules.json 加进 .gitignore（它含你的真实 QQ 号/路径），本文件是脱敏模板。',
@@ -267,6 +289,14 @@ for (const rel of files) {
       if (m.index === re.lastIndex) re.lastIndex += 1; // 空匹配保护
       if (rule.reject && rule.reject(value)) continue;
       if (isNoise(value, rule)) continue;
+      // AIGC 元数据行：按**字段名**跳过，不是按文件放行 —— 同一份文件里其它行照常检查。
+      // 见下方 AIGC_META_LINE 的说明。
+      {
+        const lineStart = text.lastIndexOf('\n', m.index - 1) + 1;
+        const lineEnd = text.indexOf('\n', m.index);
+        const currentLine = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+        if (isAigcMetaLine(currentLine)) continue;
+      }
       hits += 1;
       const line = text.slice(0, m.index).split('\n').length;
       findings.push({ kind: 'content', rule: rule.name, file: normalized, line, masked: mask(value) });

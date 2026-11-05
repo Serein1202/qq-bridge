@@ -47,28 +47,41 @@ AIGC:
 
 1. **无本地工具**：qq-chat / qq-chat-v2 预设不挂载 bash/pwsh、文件读写、子代理、工作流——群友无论如何诱导，agent 物理上无法操作本机。
 2. **QQ 动作安全子集**：默认只允许 `mcp__snowluma__*`、`mcp__snowluma-host__*`、`mcp__web-search-safe__*` 三个命名空间下的工具，以及 `ask_user_question` / `todo_write`；其他工具（含 `dev_*` 开发/管理工具）在执行期会被 `qq-tool-restrict.mjs` 拒绝。QQ 动作无禁言、踢人、文件上传下载等管理操作。
-   - ⚠️ **三个高权限命名空间默认关闭**（详见 `OPTIONAL_PRIVILEGED_PREFIXES`）：
+   - ⚠️ **三个高权限命名空间默认不开通**（下面逐个说明两层状态：注册层默认挂载、白名单层默认拒绝）：
      - `mcp__phone__` —— 经 adb 控制手机（点按/输入/截图/录屏）、连任意 host:port、经 CDP 读写网易云私信；
      - `mcp__companion__` —— 读私人日记与按人记忆；
      - `mcp__qzone__` —— 以本人身份发说说/点赞/评论（说说可删，**评论撤不回**且对外可见）。
 
      它们与「无本地工具」冲突——QQ 群会话受**群友**提示词注入驱动，一旦放行，群友一句话就能让 AI 操作你的手机、读你的日记、或用你的号公开发言，再用 `qq_send_message` 把内容回吐到群里。
-   - 确需使用时**由你显式开启，两步都要做**：
-     1. **挂载 MCP**（默认**不挂载**）：`node scripts/setup-dsh.mjs web --enable=phone,companion,qzone`
-        （等价环境变量 `QQ_BRIDGE_ENABLE_MCP=phone,companion,qzone`）。脚本幂等：
-        重跑时不带 `--enable`，这三个条目会被整段清掉 —— **能开就能关**。
-        默认不挂载的原因：`tools.restrict` 只藏本地执行类工具，MCP 命名空间走的是执行期 `guard`，
-        条目只要写进 `cordis.patch.yml`，那几十个工具名照样**出现在模型的工具 schema 里**
-        （每回合付 token，还诱导模型反复尝试调用再被拒）。不写条目 ⇒ DSH 不拉进程 ⇒ 不进 schema。
-     2. **放行白名单**：控制台「访问与安全 → 工具白名单」加入对应前缀（写入 `state/whitelist-extra.json`，重启 DSH 生效），或写进环境变量 `QQ_TOOL_RESTRICT_EXTRA` 指向的 JSON。模板见 `docs/guides/whitelist-extra.example.json`。
+   - 确需开通时，**只有一步是真正必须的**：
+     1. **放行白名单（必须）**：控制台「访问与安全 → 工具白名单」加入对应前缀或精确名（写入 `state/whitelist-extra.json`，重启 DSH 生效），或写进环境变量 `QQ_TOOL_RESTRICT_EXTRA` 指向的 JSON。
+     2. **挂载 MCP（注册层已默认挂载，多数情况下无需动手）**：`setup-dsh.mjs` 的 `PRIVILEGED_MCP_DEFAULT_ALL = true`，不传 `--enable` 时会尝试挂全部三个。以下两种情况才需要人工干预：
+        - **脚本不存在 ⇒ 自动跳过**。本仓库不附带 `packages/phone-mcp/`、`packages/qzone-mcp/`、`src/mcp-companion.js`，setup 会对缺失条目打印「跳过 MCP 条目 … 脚本不存在 …」后继续，所以全新克隆默认只有 3 个核心 MCP 真正挂上。要启用高权限能力，先把对应 server 脚本放到位，再重跑 `node scripts/setup-dsh.mjs`。
+        - **只想挂其中一部分**：`node scripts/setup-dsh.mjs web --enable=phone,companion`（等价环境变量 `QQ_BRIDGE_ENABLE_MCP`）。显式传 `--enable` 就**只挂指定子集**；不传则三个都尝试挂。脚本幂等，重跑会整段替换这几个条目 —— **能开就能关**。
 
-     两步缺一不可：只挂载不放行 = 看得到工具、调用被拒；只放行不挂载 = 白名单开着但没有工具可掉。开启前请确认该 QQ 会话不会被不可信人群触达。
-   - ✅ 建议的折中做法：这三个能力只在**私聊**会话里放行。先按上面第 1 步挂载，再按需开户；不要图省事全局开。
-   - 2026-10-30 的一次批量合并曾把 `mcp__phone__` / `mcp__companion__` 直接写进内置基线（默认放行），与本文当时的描述背离；现已改回默认关闭。回归断言见 `scripts/test-preset-local-tools.mjs` 的「高权限命名空间默认不在内置基线里」。
+        挂载本身**不构成提权**：没放行的工具在执行期仍会被 `qq-tool-restrict.mjs` 的 guard 拒绝。它的实际代价是 token 与误导——条目写进 `cordis.patch.yml` 后，那几十个工具名会**出现在模型的工具 schema 里**（每回合付 token，还诱导模型反复尝试调用再被拒），因为 `tools.restrict` 只藏本地执行类工具、MCP 命名空间走的是执行期 `guard`。所以只想验证链路、暂不给工具时，用 `--enable` 缩小挂载范围更省事。
+
+     > **可选插件的工具不进内置基线。** 内置基线（`plugins/qq-agent-presets/qq-tool-restrict.mjs` 的 `BASE_SAFE_EXACT_SET` / `BASE_SAFE_PREFIXES`）只放**默认安装就存在**的工具（`mcp__snowluma__` / `mcp__snowluma-host__` / `mcp__web-search-safe__` / `ask_user_question` / `todo_write`）。装了可选插件后需要某个工具，由使用者自行在控制台追加到外部白名单。逐条精确名而不是加前缀，是因为前缀白名单对插件后续新增的工具是 fail-open 的。
+     >
+     > 2026-11-04 起，仓库**不再附带任何可选插件的工具名**：原先的 `plugins/qq-agent-presets/plugin-tool-packs.json`（bili-scroll / billion-context 的声明清单）与 `scripts/whitelist-add.mjs`（批量写入脚本）已整体移除，`state/whitelist-extra.json` 默认为空。这五类插件（bili / douyin / mneme / meme / imagegen）的工具如需在 QQ 会话里使用，请自行按需追加。
+
+   - **放行模式（`state/tool-restrict-mode.json`，或环境变量 `QQ_TOOL_RESTRICT_MODE`）**决定执行期 guard 的松紧：
+
+     | 模式 | 行为 | 适用 |
+     | --- | --- | --- |
+     | `allowlist` | 只放行内置基线 + 外部追加，其余一律拒绝 | 最严；需要逐个人工审核每个插件工具 |
+     | `auto`（默认） | 在 `allowlist` 基础上，**自动放行已装载插件注册的工具**：清单取自 `~/.dsh/profiles/<profile>/package.json` 的 `dsh.profile.bundles`，**排除 `@deepseek-ai/` 核心包**（`read` / `write` / `pwsh` / `terminal_*` / `session_*` / `subagent` 全在核心包里），再减去 `KNOWN_DANGEROUS_GLOBAL_TOOLS` 做双保险 | 常规使用；新装插件零配置即可用，核心本地执行工具仍然被挡 |
+     | `open` | 不判定，除工具名为空外一律放行（≈ 把白名单丢掉）；`tools.restrict` 的隐藏名单仍然生效 | 明确知道自己在干什么、只在本机可信插件环境 |
+
+     `auto` 的判定前提是"装插件 = 信任它的代码"：插件既然已经在本进程里跑，它本来就有完整 Node 权限，guard 挡不住它、也不该假装能挡；guard 真正要挡的是模型能通过 QQ 群提示词注入调到的**宿主核心工具**。模式每次启动都会往 stderr 打一行，控制台「工具白名单」页也会显示当前模式与自动放行条数（不可观测的放宽等于不可管理）。
+
+      > **两层的分工**：挂载决定工具**存不存在**，白名单决定工具**调不调得动**。默认状态是「注册层挂载（脚本存在时）+ 白名单层拒绝」，所以全新安装下这些工具可能出现在 schema 里，但一定调不动。只放行不挂载 = 白名单开着却没有工具可掉。
+   - ✅ 建议的折中做法：这三个能力只在**私聊**会话里放行。不要图省事全局开。
+   - 回归断言见 `scripts/test-preset-local-tools.mjs` 的「高权限命名空间默认不在内置基线里」——它防的正是 2026-10-30 那次批量合并：当时把这三个前缀直接写进内置基线，等于白名单层也默认放行，与本文描述背离；已改回默认不放行并保持至今。关闭注册层挂载则把 `PRIVILEGED_MCP_DEFAULT_ALL` 改为 `false` 后重跑 setup，高权限条目会被整段清掉。
 3. **只读联网搜索**：`qq-chat` / `qq-chat-v2` 预设已关闭 DSH 内置 `tool-web` 的 `search` / `fetch`，联网统一走 `src/mcp-web-search-safe.js` 提供的 `mcp__web-search-safe__web_search/web_fetch`。不暴露本地文件、命令执行、写操作。
    - ✅ `mcp__web-search-safe__web_fetch` 已做 SSRF 加固：仅 http/https、禁止 localhost/私有 IP/链路本地/CGNAT/带凭据 URL、DNS 解析结果全量校验、每跳重定向重新校验、响应体限量读取。
 4. **发送强制白名单**：所有发送类工具（`qq_send_group_message` / `qq_send_private_message` / `qq_send_message` / `qq_send_burst` / `qq_reply` / `qq_send_poke` / `qq_send_sticker` / `qq_send_voice` 等）的目标必须命中 `config.json` 的 `allow.groups` / `allow.private`，否则拒绝执行。
-   - **语音额外收紧**：`qq_send_voice` 只能发**语音库**（`socialV2.voice.dir`，默认 `qq-bridge/audio/`）里的文件，不能发任意本地路径、URL 或 base64（防 prompt injection 拿本机文件当语音外发）；另有独立的时长/体积/频率上限（`socialV2.voice.*`），额度与文本发送分开计数。详见 [docs/guides/VOICE.md](docs/guides/VOICE.md)。
+   - **语音额外收紧**：`qq_send_voice` 只能发**语音库**（`socialV2.voice.dir`，默认 `qq-bridge/audio/`）里的文件，不能发任意本地路径、URL 或 base64（防 prompt injection 拿本机文件当语音外发）；另有独立的时长/体积/频率上限（`socialV2.voice.*`），额度与文本发送分开计数。细则见配置项 `socialV2.voice.*` 与 `src/voice-core.js`（`VOICE.md` 属本地未入库资料，公开仓库不含该文件，故不给链接）。
 5. **发送禁令（模型层）**：persona 明确规定只有「管理端明确指示」或「【管理员】标记的明确要求」才可使用发送工具；禁止写"我已回复/消息已发送（message_id）"类汇报。
 6. **回复审计（桥接层硬拦截）**：agent 回复文本若包含本机路径（`C:\`、`/home/` 等）或凭据特征（token/password/secret/api key 等）→ **整条拦截不发送**，并告知"被安全策略拦截"。
 7. **人格由桥接注入**：角色设定来自 `state/current-role.json` + `roles/<角色>.md`，桥接注入到消息；群友口头要求改角色无效（桥接直接拦截），agent 也无文件工具自行更改。

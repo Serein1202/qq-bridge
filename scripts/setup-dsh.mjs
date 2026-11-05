@@ -235,10 +235,21 @@ function resolveNodeBin() {
       if (fs.existsSync(p)) candidates.push(p);
     }
   }
-  // 托管运行时 / 临时目录：今天能跑，明天可能就没了
-  const VOLATILE = /(\.workbuddy|\\Temp\\|\/tmp\/|AppData\\Local\\Temp)/i;
+  // 托管运行时 / 临时目录：今天能跑，明天可能就没了。
+  //
+  // `MarvisHost` 与 `\node\current\` 是实测踩过的坑（2026-11-04）：腾讯 Marvis 在
+  // 11-03 升级时把 `binaries\node\current\node.exe` 改名成 `node.exe.~del_c08e`，
+  // 而 cordis.patch.yml 里 6 个 MCP 条目还指着那个路径 ⇒ 6 个 MCP server 全部拉不起来
+  // ⇒ 模型侧所有 `mcp__*` 工具报 unknown tool（QQ 那头表现是"AI 听得见、发不出"）。
+  // `\node\current\` 是这类"版本软链 + 升级即换"目录的共同特征。
+  const VOLATILE = /(\.workbuddy|\\Temp\\|\/tmp\/|AppData\\Local\\Temp|MarvisHost|\\node\\current\\)/i;
   const uniq = [...new Set(candidates)];
   const stable = uniq.filter((p) => !VOLATILE.test(p));
+  // 官方安装位优先：PATH 里可能混着各种随宿主应用升级/卸载就消失的运行时
+  // （上面的 Marvis 就是典型），而 `C:\Program Files\nodejs\node.exe` 最不容易被别的软件动到。
+  // 只在排序里加权，不硬编码 —— 没装官方版时仍会回落到 PATH 里其它可用的解释器。
+  const OFFICIAL = /^[A-Za-z]:[\\/]Program Files( \(x86\))?[\\/]nodejs[\\/]node\.exe$/i;
+  const ordered = [...stable].sort((a, b) => Number(OFFICIAL.test(b)) - Number(OFFICIAL.test(a)));
   // engines.node >= 22.13：MCP server 用了较新的 Node API，版本不够会在运行时才炸。
   // 宁可现在多跑一次 `node -v`，也别把「DSH 起来了但工具全挂」留到现网排查。
   const majorOf = (p) => {
@@ -249,7 +260,7 @@ function resolveNodeBin() {
     } catch { return 0; }
   };
   const MIN_MAJOR = 22;
-  const pick = stable.find((p) => majorOf(p) >= MIN_MAJOR) ?? stable[0];
+  const pick = ordered.find((p) => majorOf(p) >= MIN_MAJOR) ?? ordered[0];
   if (pick && majorOf(pick) < MIN_MAJOR) {
     log(`⚠️ 找到的 node 版本过低（${pick}，需要 >= ${MIN_MAJOR}）：MCP server 可能跑不起来；`
       + '建议升级 Node，或用 QQ_BRIDGE_NODE_BIN 指定一个满足版本的解释器。');
@@ -273,8 +284,17 @@ function mcpEntries(enabledPrivileged = new Set()) {
   const ids = [...CORE_MCP_IDS, ...PRIVILEGED_MCP_IDS.filter((id) => enabledPrivileged.has(id))];
   let out = '# === qq-bridge MCP BEGIN ===\n';
   out += '# 由 scripts/setup-dsh.mjs 维护；这段区块会被整体替换，请勿手工编辑内部条目。\n';
+  // 脚本不存在就不写条目 —— 写进去的后果是 DSH 每次启动都 ENOENT spawn 失败，
+  // 而且工具名照样出现在模型 schema 里（每回合付 token、反复调用再被拒）。
+  // 受影响的三个路径都不在本仓库内：
+  //   packages/phone-mcp/src/phone-mcp.js  —— 外部可选包，需自行放置
+  //   packages/qzone-mcp/src/qzone-mcp.js  —— 同上
+  //   src/mcp-companion.js                 —— 历史文件，当前仓库不含
+  // 跳过时明确打印，不静默：否则 user 开了 --enable=phone 却发现工具不存在会莫名其妙。
+  const skipped = [];
   for (const id of ids) {
     const s = MCP_SERVERS[id];
+    if (!fs.existsSync(s.script)) { skipped.push({ id, script: s.script }); continue; }
     out += `- insert:\n`;
     out += `    - id: ${id}\n`;
     out += `      name: '@deepseek-ai/dsh-mcp-client'\n`;
@@ -288,6 +308,12 @@ function mcpEntries(enabledPrivileged = new Set()) {
     if (s.toolCallTimeoutMs) out += `        toolCallTimeoutMs: ${s.toolCallTimeoutMs}\n`;
   }
   out += '# === qq-bridge MCP END ===\n';
+  for (const it of skipped) {
+    log(`跳过 MCP 条目 ${it.id}：脚本不存在 ${it.script}`);
+  }
+  if (skipped.length) {
+    log(`（共跳过 ${skipped.length} 个。这几个是可选/外部 server，本仓库不附带；放好脚本后重跑本脚本即可挂载。）`);
+  }
   return out;
 }
 
